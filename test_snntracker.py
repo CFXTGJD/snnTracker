@@ -22,6 +22,8 @@ from visualization.get_video import obtain_detection_video
 import pathlib
 from pathlib import Path
 
+from tracking_mot import TrackingMetrics
+
 if __name__ == "__main__":
 
     print("REMOTE_HOST_RUN:", os.uname().nodename)

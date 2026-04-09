@@ -73,6 +73,7 @@ def data_parameter_dict(data_filename, label_type):
             paraDict['filelist'] = filelist
             paraDict['label_root_list'] = label_root_list
         else:
+            print(f"file_root: {glob.glob(file_root)}")
             filepath = glob.glob(file_root)[0]
             rawname = filename[-1].replace('.dat', '')
             filename.pop(-1)

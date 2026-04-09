@@ -58,7 +58,9 @@ def normalize_gt_to_csv(src_path, dst_path, expected_cols=10):
 
 def robust_load_gt(gt_file, fmt="mot15-2D"):
     path = _coerce_single_path(gt_file)  # << 关键：把 list 等转成单一路径
-    expected_cols = 12 if 'mot15' in fmt.lower() else 10
+    # 最小修复：mot15-2D 对应常见 10 列 MOT 文本；若补到 12 列会导致列语义错位
+    # （FrameId/Id 被当成普通列，X/Y/W/H整体左移），从而 IoU 基本为 0。
+    expected_cols = 10
     cleaned = os.path.splitext(path)[0] + f".clean_{expected_cols}.csv"
 
     normalize_gt_to_csv(path, cleaned, expected_cols=expected_cols)
@@ -79,6 +81,73 @@ class TrackingMetrics:
         self.gt = robust_load_gt(self.gt_file, fmt="mot15-2D")  # 或 "mot15-2D"
 
         model_res = mm.io.loadtxt(res_filepath, fmt="mot15-2D")
+
+        # 最小修复：统一 MultiIndex 名称，避免 pandas union/join 报错
+        if isinstance(self.gt.index, pd.MultiIndex) and len(self.gt.index.names) >= 2:
+            self.gt.index = self.gt.index.set_names(["FrameId", "Id"])
+        if isinstance(model_res.index, pd.MultiIndex) and len(model_res.index.names) >= 2:
+            model_res.index = model_res.index.set_names(["FrameId", "Id"])
+
+        # ---- Diagnostics for metric abnormalities ----
+        gt_frame_counts = self.gt.groupby(level="FrameId").size()
+        dt_frame_counts = model_res.groupby(level="FrameId").size()
+        common_frames = sorted(set(gt_frame_counts.index) & set(dt_frame_counts.index))
+
+        print("[Diag] GT rows:", len(self.gt), "DT rows:", len(model_res))
+        print(
+            "[Diag] GT det/frame mean,min,max = "
+            f"{gt_frame_counts.mean():.2f}, {gt_frame_counts.min()}, {gt_frame_counts.max()}"
+        )
+        print(
+            "[Diag] DT det/frame mean,min,max = "
+            f"{dt_frame_counts.mean():.2f}, {dt_frame_counts.min()}, {dt_frame_counts.max()}"
+        )
+        print("[Diag] overlap frame count:", len(common_frames))
+
+        dt_dup_count = int(model_res.reset_index().duplicated(subset=["FrameId", "Id"]).sum())
+        gt_dup_count = int(self.gt.reset_index().duplicated(subset=["FrameId", "Id"]).sum())
+        print(f"[Diag] duplicate (FrameId,Id): GT={gt_dup_count}, DT={dt_dup_count}")
+
+        # Minimal guard fix: deduplicate DT by (FrameId, Id) before evaluation.
+        # Keep the highest-confidence row for each key.
+        if dt_dup_count > 0:
+            model_res = (
+                model_res
+                .reset_index()
+                .sort_values(["FrameId", "Id", "Confidence"], ascending=[True, True, False])
+                .drop_duplicates(subset=["FrameId", "Id"], keep="first")
+                .set_index(["FrameId", "Id"])
+                .sort_index()
+            )
+            print(f"[Diag] DT rows after dedup: {len(model_res)}")
+
+        # quick geometric sanity check: max IoU in first overlap frame
+        def _max_iou_for_frame(gt_f: pd.DataFrame, dt_f: pd.DataFrame) -> float:
+            if gt_f.empty or dt_f.empty:
+                return 0.0
+            g = gt_f[["X", "Y", "Width", "Height"]].to_numpy(dtype=float)
+            d = dt_f[["X", "Y", "Width", "Height"]].to_numpy(dtype=float)
+
+            best = 0.0
+            for gx, gy, gw, gh in g:
+                g_x2, g_y2 = gx + gw, gy + gh
+                for dx, dy, dw, dh in d:
+                    d_x2, d_y2 = dx + dw, dy + dh
+                    inter_w = max(0.0, min(g_x2, d_x2) - max(gx, dx))
+                    inter_h = max(0.0, min(g_y2, d_y2) - max(gy, dy))
+                    inter = inter_w * inter_h
+                    union = gw * gh + dw * dh - inter
+                    iou = inter / union if union > 0 else 0.0
+                    if iou > best:
+                        best = iou
+            return best
+
+        if common_frames:
+            f0 = common_frames[0]
+            gt0 = self.gt.xs(f0, level="FrameId")
+            dt0 = model_res.xs(f0, level="FrameId")
+            print(f"[Diag] first overlap frame={f0}, GT count={len(gt0)}, DT count={len(dt0)}")
+            print(f"[Diag] first overlap frame max IoU={_max_iou_for_frame(gt0, dt0):.4f}")
 
         # 根据GT和自己的结果，生成accumulator，distth是距离阈值
         self.acc = mm.utils.compare_to_groundtruth(self.gt, model_res, 'iou', distth=0.6)
