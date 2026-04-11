@@ -4,14 +4,11 @@ This module wraps `STPFilter` and `motion_estimation` into a single
 frozen frontend pipeline:
 
 raw spikes -> STP filtering (optional) -> motion estimation (optional)
-
-Input: $ X \in \{0,1\}^{H\times W\times T} $
-Output: $ M \in \mathbb{R}^{H\times W\times K} $
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 import torch
@@ -37,6 +34,7 @@ class MotionFrontend:
         diff_time: STP history window length.
         enable_stp: Enable/disable STPFilter stage.
         enable_motion: Enable/disable motion_estimation stage.
+        speed_list: Optional speed levels passed to motion_estimation.
         stp_params: Optional STP parameter override dict.
         motion_params: Optional motion parameter override dict.
         logger: Optional external logger for motion visualization.
@@ -69,6 +67,7 @@ class MotionFrontend:
         diff_time: int = 1,
         enable_stp: bool = True,
         enable_motion: bool = True,
+        speed_list: Optional[Sequence[int]] = None,
         stp_params: Optional[Dict[str, Any]] = None,
         motion_params: Optional[Dict[str, Any]] = None,
         logger: Optional[Any] = None,
@@ -79,7 +78,7 @@ class MotionFrontend:
                        torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         self.diff_time = int(diff_time)
 
-        # Ablation switches.
+        # Stage toggles for ablation or benchmarking.
         self.enable_stp = bool(enable_stp)
         self.enable_motion = bool(enable_motion)
 
@@ -91,6 +90,8 @@ class MotionFrontend:
         self.motion_params = dict(self._DEFAULT_MOTION_PARAMS)
         if motion_params:
             self.motion_params.update(motion_params)
+        if speed_list is not None:
+            self.motion_params["speed_list"] = list(speed_list)
 
         self.logger = logger if logger is not None else _NullLogger()
         self.timestamp = 0
@@ -196,16 +197,17 @@ class MotionFrontend:
 
         Returns:
             Default (`return_intermediate=False`):
-                - motion vectors [T,H,W,2] when motion stage is enabled
+                - motion pattern map [T,H,W,8*K] when motion stage is enabled
                 - frontend spikes [T,H,W] otherwise
-            Intermediate (`return_intermediate=True`): dict with stage outputs.
+            Intermediate (`return_intermediate=True`): dict with stage outputs,
+                including both pattern-map and legacy XY-vector motion fields.
         """
         spikes_t_h_w = self._to_t_h_w(data)
         spikes_t_h_w = spikes_t_h_w.to(self.device)
         if not torch.is_floating_point(spikes_t_h_w):
             spikes_t_h_w = spikes_t_h_w.float()
 
-        # Frontend expects binary event frames.
+        # Keep frontend input as binary event frames.
         spikes_t_h_w = (spikes_t_h_w > 0).float()
 
         num_frames = int(spikes_t_h_w.shape[0])
@@ -216,7 +218,8 @@ class MotionFrontend:
 
         collect_frontend = return_intermediate or (not self.enable_motion)
         frontend_spikes_seq = [] if collect_frontend else None
-        motion_vec_seq = [] if self.enable_motion else None
+        motion_pattern_seq = [] if self.enable_motion else None
+        motion_vec_seq = [] if (self.enable_motion and return_intermediate) else None
         motion_id_seq = [] if (self.enable_motion and return_intermediate) else None
         motion_vec_l1_seq = [] if (self.enable_motion and return_intermediate) else None
 
@@ -241,15 +244,17 @@ class MotionFrontend:
                     if update_stdp:
                         self.motion_estimator.stdp_tracking(stage_spikes)
 
-                    motion_id, motion_vec, motion_vec_layer1 = self.motion_estimator.local_wta(
+                    motion_id, motion_vec, motion_vec_layer1, motion_pattern = self.motion_estimator.local_wta(
                         stage_spikes,
                         timestamp,
                         visualize=visualize,
+                        return_pattern_map=True,
                     )
-                    motion_vec_seq.append(motion_vec.detach().clone())
+                    motion_pattern_seq.append(motion_pattern.detach().clone())
 
                     if return_intermediate:
                         motion_id_seq.append(motion_id.detach().clone())
+                        motion_vec_seq.append(motion_vec.detach().clone())
                         motion_vec_l1_seq.append(motion_vec_layer1.detach().clone())
 
         self.timestamp = start_timestamp + num_frames
@@ -257,9 +262,14 @@ class MotionFrontend:
         if not return_intermediate:
             if self.enable_motion:
                 if num_frames == 0:
-                    out = torch.empty((0, self.spike_h, self.spike_w, 2), dtype=torch.float32, device=self.device)
+                    channels = (
+                        int(self.motion_estimator.motion_pattern_num)
+                        if self.motion_estimator is not None
+                        else 0
+                    )
+                    out = torch.empty((0, self.spike_h, self.spike_w, channels), dtype=torch.float32, device=self.device)
                 else:
-                    out = torch.stack(motion_vec_seq, dim=0)
+                    out = torch.stack(motion_pattern_seq, dim=0)
             else:
                 if num_frames == 0:
                     out = torch.empty((0, self.spike_h, self.spike_w), dtype=torch.float32, device=self.device)
@@ -273,6 +283,9 @@ class MotionFrontend:
             else torch.empty((0, self.spike_h, self.spike_w), dtype=torch.float32, device=self.device),
             "motion_vector": torch.stack(motion_vec_seq, dim=0)
             if (motion_vec_seq is not None and num_frames > 0)
+            else None,
+            "motion_pattern": torch.stack(motion_pattern_seq, dim=0)
+            if (motion_pattern_seq is not None and num_frames > 0)
             else None,
             "motion_id": torch.stack(motion_id_seq, dim=0)
             if (motion_id_seq is not None and num_frames > 0)

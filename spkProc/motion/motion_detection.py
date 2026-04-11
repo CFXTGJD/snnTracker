@@ -7,7 +7,7 @@ import os
 
 class motion_estimation:
 
-    def __init__(self, dvs_h, dvs_w, device, logger, debug_mode=False, debug_frame_target=200, debug_require_nonzero=True, debug_min_spike_ratio=0.0):
+    def __init__(self, dvs_h, dvs_w, device, logger, debug_mode=False, debug_frame_target=200, debug_require_nonzero=True, debug_min_spike_ratio=0.0, speed_list=None):
 
         self.dvs_h = dvs_h
         self.dvs_w = dvs_w
@@ -36,7 +36,14 @@ class motion_estimation:
                              [-1, -1],
                              [0, -1],
                              [1, -1]], dtype=np.int32)
-        self.speed = np.array([1, 2], dtype=np.int32)
+        if speed_list is None:
+            self.speed = np.array([1, 2], dtype=np.int32)
+        else:
+            if len(speed_list) == 0:
+                raise ValueError("`speed_list` must not be empty")
+            self.speed = np.array(speed_list, dtype=np.int32)
+            if np.any(self.speed <= 0):
+                raise ValueError("`speed_list` values must be positive integers")
         self.ori_x = torch.from_numpy(np.expand_dims(self.ori[:, 0], axis=1)).to(self.device).float()
         self.ori_y = torch.from_numpy(np.expand_dims(self.ori[:, 1], axis=1)).to(self.device).float()
 
@@ -286,7 +293,7 @@ class motion_estimation:
         
         return tmp_motion
 
-    def local_wta(self, spikes, timestamp, visualize=False):
+    def local_wta(self, spikes, timestamp, visualize=False, return_pattern_map=False):
         # Ensure spikes are on the correct device without unnecessary transfers
         if spikes.device != self.device:
             spikes = spikes.to(self.device, non_blocking=True)
@@ -378,6 +385,15 @@ class motion_estimation:
         max_motion_layer1 = torch.zeros(self.dvs_h, self.dvs_w, dtype=torch.int64, device=self.device)
 
         motion_vector_max = torch.zeros(self.dvs_h, self.dvs_w, 2, dtype=torch.float32, device=self.device)
+        motion_pattern_map = None
+        if return_pattern_map:
+            motion_pattern_map = torch.zeros(
+                self.dvs_h,
+                self.dvs_w,
+                self.motion_pattern_num,
+                dtype=torch.float32,
+                device=self.device,
+            )
 
         # 9. 对于第二层激活像素点，记录其最大方向编号（max_vid+1，方向编号从1开始）
         max_motion[fired_layer2_mask] = max_vid[fired_layer2_mask].detach() + 1
@@ -391,6 +407,11 @@ class motion_estimation:
 
         # 11. 对于未被第二层激活的像素点，将其第一层方向编号清零
         max_motion_layer1[max_motion == 0] = 0
+
+        if return_pattern_map and fired_layer2_mask.any():
+            fired_y, fired_x = torch.where(fired_layer2_mask)
+            pattern_id = max_wid[fired_y, fired_x].long()
+            motion_pattern_map[fired_y, fired_x, pattern_id] = 1.0
 
         # 1. find the difference between m1 and mc motion
         has_layer2 = fired_layer2_mask.any()
@@ -445,4 +466,6 @@ class motion_estimation:
             if (self._call_step % self.empty_cache_every) == 0:
                 torch.cuda.empty_cache()
  
+        if return_pattern_map:
+            return max_motion, motion_vector_max, motion_vector_layer1, motion_pattern_map
         return max_motion, motion_vector_max, motion_vector_layer1
