@@ -73,7 +73,7 @@ motVidarReal2025/
 Run the entry script `test_snntracker.py`:
 
 ```bash
-python test_snntracker.py     --scene_idx 0     --attention_size 15     --data_path /root/autodl-fs/motVidarReal2020/     --label_type tracking     --metrics
+python test_snntracker.py     --scene_idx 0     --attention_size 15     --data_path /home/hanruoshui/snnTracker/motVidarReal2025/     --label_type tracking     --metrics
 ```
 
 ### 🔧 Argument Description

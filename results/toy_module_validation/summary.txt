@@ -1,0 +1,15 @@
+device: cuda
+stp_toy:
+  static_late_mean: 0.0000
+  moving_late_mean: 0.8364
+  passed: True
+motion_toy:
+  stable_dir: 7
+  mean_dx: -0.0000
+  mean_dy: -1.1881
+  dominant_dirs: [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]
+  passed: True
+motion_direction_sweep:
+  mapping: {'right': 7, 'left': 3, 'down': 1, 'up': 5, 'down_right': 8, 'down_left': 2, 'up_right': 6, 'up_left': 4}
+  unique_nonzero: 8
+  passed: True

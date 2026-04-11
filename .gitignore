@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.DS_Store
+.ipynb_checkpoints/
+
+*.out
+*.log
+events.out.tfevents.*
+
+data/log_pkuvidar/
+motVidarReal2025/
+*.zip

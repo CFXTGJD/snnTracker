@@ -94,7 +94,7 @@ termcolor==2.4.0
 threadpoolctl==3.5.0
 tifffile==2023.7.10
 tomli==2.2.1
-torch==2.4.1
+## torch==2.4.1
 torchgeometry==0.1.2
 torchvision==0.19.1
 tqdm==4.67.0
