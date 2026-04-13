@@ -6,7 +6,7 @@
 
 `plot_spike_dataset.py` 验证数据读取和可视化是否正常：能否从 `scene_dir/spikes.dat` 按 `config.yaml` 的 `spike_h/spike_w` 正确解码；能否生成采样 spike 帧、每帧活跃像素曲线、空间累积热力图、时间投影图；如果存在 `spikes_gt.txt`，还能检查 GT 框和 spike 底图是否对齐。
 
-`toy_validate_modules.py` 验证模块级行为：STP toy 检查静态高频闪烁是否被适应抑制、运动或突发目标是否被保留；motion toy 检查简单运动目标是否形成稳定方向；direction sweep 建立输入方向到 `motion ID` 的实测映射；complex motion toy 检查 8 个方向、2 个速度、带稀疏随机噪声条件下的方向恢复鲁棒性。当前 `motion_direction_sweep` 的实测映射为：`right -> 7`，`left -> 3`，`down -> 1`，`up -> 5`，`down_right -> 8`，`down_left -> 2`，`up_right -> 6`，`up_left -> 4`。
+`toy_validate_modules.py` 验证模块级行为：STP toy 检查静态高频闪烁是否被适应抑制、运动或突发目标是否被保留；motion toy 检查简单运动目标是否形成稳定方向；direction sweep 建立输入方向到 `motion ID` 的实测映射；complex motion toy 检查 8 个方向、2 个速度、带稀疏随机噪声条件下的方向恢复鲁棒性。`tools/motion_parameter_sweep.py` 进一步扫描 `speed/object size/noise probability`，用于定位方向检测失败边界。当前 `motion_direction_sweep` 的实测映射为：`right -> 7`，`left -> 3`，`down -> 1`，`up -> 5`，`down_right -> 8`，`down_left -> 2`，`up_right -> 6`，`up_left -> 4`。
 
 `motion_complex_toy_validation` 的构造方式是 16 个独立 case，而不是一个多目标混合场景：8 个方向分别为 `right/left/down/up/down_right/down_left/up_right/up_left`，每个方向测试 `speed 1` 和 `speed 2` 两种速度；每个 case 中有一个 `5x5` 移动方块目标，从画面中心附近出发，同时叠加概率为 `0.001` 的稀疏随机噪声。该设计用于检查单目标方向估计在速度变化和轻噪声下是否稳定，不验证多目标分离能力。
 
@@ -25,12 +25,14 @@
 | 运动估计简单验证 | `run_motion_toy()` | `spkProc/motion/motion_detection.py` `stdp_tracking()`, `local_wta()` |
 | 方向 ID 映射 | `run_motion_direction_sweep()` | `motion_estimation.local_wta()` |
 | 复杂方向压力测试 | `run_motion_complex_toy()` | `motion_weight`, `motion_id`, `motion_vector_max` |
+| 方向检测参数扫参 | `tools/motion_parameter_sweep.py` | `motion_estimation.stdp_tracking()`, `motion_estimation.local_wta()` |
 
 # How to Run
 
 ```bash
 python visualization/plot_spike_dataset.py --scene_dir motVidarReal2025/spike59 --begin_idx 0 --num_frames 300 --num_samples 8 --output_dir results/spike_dataset_viz
 python tools/toy_validate_modules.py --output_dir results/toy_module_validation
+python tools/motion_parameter_sweep.py --output_dir results/motion_parameter_sweep
 ```
 
 | Parameter | Script | Default | Description |
@@ -41,6 +43,11 @@ python tools/toy_validate_modules.py --output_dir results/toy_module_validation
 | `--num_samples` | `plot_spike_dataset.py` | `8` | montage / GT overlay 中展示的采样帧数 |
 | `--output_dir` | both | script-specific | 输出目录 |
 | `--gt_path` | `plot_spike_dataset.py` | `scene_dir/spikes_gt.txt` | 可选 GT 文件路径 |
+| `--speeds` | `motion_parameter_sweep.py` | `"1 2 3"` | 扫描的目标速度，单位为 pixels/frame |
+| `--box_sizes` | `motion_parameter_sweep.py` | `"3 5 7"` | 方块目标边长 |
+| `--noise_probs` | `motion_parameter_sweep.py` | `"0 0.001 0.003"` | 每像素随机 spike 概率 |
+| `--correct_thr` | `motion_parameter_sweep.py` | `0.70` | 每个方向正确率通过阈值 |
+| `--hit_thr` | `motion_parameter_sweep.py` | `0.70` | 每个方向有效 motion 输出通过阈值 |
 
 # Outputs
 
@@ -59,6 +66,13 @@ results/
     ├── motion_direction_sweep.png       # 输入方向到 motion ID 的实测映射。
     ├── motion_complex_toy_validation.png# 多方向、多速度、带噪声的 motion 压力检查。
     └── summary.txt                      # 所有 toy validation 的数值指标和 pass/fail。
+results/motion_parameter_sweep/
+├── motion_parameter_sweep_cases.csv     # 每个 direction/speed/box/noise case 的 expected_id、stable_id、correct_rate、hit_rate。
+├── motion_parameter_sweep_aggregate.csv # 每个 speed/box/noise 组合在 8 个方向上的最小/平均正确率和失败方向。
+├── motion_sweep_noise_0.png             # noise=0 时 speed 与 box_size 的通过边界热力图。
+├── motion_sweep_noise_0.001.png         # noise=0.001 时的方向检测鲁棒性热力图。
+├── motion_sweep_noise_0.003.png         # noise=0.003 时的方向检测鲁棒性热力图。
+└── summary.txt                          # 参数范围、通过组合、失败组合和失败方向摘要。
 ```
 
 当前已运行所有本地数据集可视化：`badminton/cpl1/cplCam/pingpong/rotTrans/spike59` 均生成 montage、activity curve、spatial heatmap 和 temporal projection；其中 `rotTrans` 与 `spike59` 存在 `spikes_gt.txt`，额外生成 GT overlay。`tools/toy_validate_modules.py` 当前输出显示 STP 简单与复杂验证通过，motion 简单验证和 direction sweep 通过，motion complex 压力测试未通过。
@@ -66,6 +80,8 @@ results/
 `toy_module_validation` 中各图的读法如下：`stp_toy_validation.png` 左上/右上是输入 spike 帧，横轴为 width、纵轴为 height；左下 `Filtered Spike Response` 横轴为 frame，纵轴为 binary pass，静态点曲线应后期接近 0，运动目标曲线应在出现后保持较高；右下 `Adaptive Threshold at Static Pixel` 横轴为 frame，纵轴为静态点处自适应阈值。`stp_complex_toy_validation.png` 第一行是复杂输入帧；第二行左图横轴为 frame、纵轴为 pass/hit rate，用于比较静态结构、随机噪声、两个运动目标的通过情况；第二行右图横轴为 frame、纵轴为静态区域平均阈值；第三行左图横轴为 frame、纵轴为 spike pixels，比较输入和过滤后数量；第三行右图横轴为 frame、纵轴为 burst mask pass rate，检查短暂突发目标是否响应。
 
 `motion_toy_validation.png` 左上/右上是运动方块起止帧；左下 `Dominant Motion ID per Frame` 横轴为 frame，纵轴为 motion ID，稳定水平线表示方向估计稳定；右下 `Recovered Motion Statistics` 横轴为 frame，纵轴为数值，`mean dx/mean dy` 表示有效运动像素的平均运动向量分量，`active motion pixels` 表示有效运动像素数量。`motion_direction_sweep.png` 横轴为输入方向，纵轴为 recovered motion ID；每个方向应恢复出非零且互不重复的 ID。`motion_complex_toy_validation.png` 三个热力图横轴均为 `speed 1/speed 2`，纵轴均为 8 个输入方向；左图颜色和值为 `correct_rate`，中图为 `hit_rate`，右图为稳定恢复出的 `motion ID`。
+
+`motion_parameter_sweep` 当前默认扫描 `speed=1/2/3`、`box_size=3/5/7`、`noise_prob=0/0.001/0.003`，共 27 个组合，每个组合跑 8 个方向；另做了 speed=1 低噪声细扫：`noise_prob=0/0.00025/0.0005/0.001`。扫参图中横轴为 speed，纵轴为 box size；左图为 8 个方向中的最小 `correct_rate`，中图为最小 `hit_rate`，右图为该组合是否整体通过。`noise_prob=0.001` 对应 `72x96` 图像中约 `6.9` 个随机 spike/frame，`0.003` 约 `20.7` 个随机 spike/frame。
 
 # How to Interpret Results
 
@@ -76,5 +92,7 @@ STP 结果中，`static_late_mean` 和 `noise_mean` 应低，`moving*_mean`、`b
 Motion 结果中，`motion_direction_sweep` 的 mapping 是判读 `motion ID` 的依据；例如简单向右 toy 输出 `stable_dir=7`，结合映射可判定为 `right`，当前该项通过。复杂 motion toy 中 `hit_rate` 高表示目标被检测到，`correct_rate` 高表示方向分类正确。当前 `min_hit_rate=1.0000` 但 `min_correct_rate=0.1667`，因此 `passed=False`：目标区域都能形成有效 motion 输出，但部分方向被估成相邻 ID。典型异常包括 `left speed_1` 期望 `3` 但稳定为 `2`，`down_right speed_2` 期望 `8` 但稳定为 `7`，`up_left speed_2` 期望 `4` 但稳定为 `3`。这通常表示方向分类鲁棒性不足，尤其在对角方向、速度变化或噪声干扰下容易发生混淆。
 
 `summary.txt` 的指标含义和判别标准：`device` 表示运行设备；`stp_toy.static_late_mean` 是第 20 帧后静态点平均通过率，越低越好；`stp_toy.moving_late_mean` 是第 25 帧后运动目标通过率，需比静态点高至少 `0.4` 才通过。`stp_complex_toy.static_late_mean < 0.15`、`noise_mean < 0.35`、`moving1_mean > 0.55`、`moving2_mean > 0.55`、`burst_peak > 0.5`、`suppression_ratio < 0.8` 时判为通过。`motion_toy.stable_dir` 是 warmup 后最常见 motion ID，`dominant_dirs` 应非空且所有值一致；`mean_dx/mean_dy` 用于辅助判断方向向量，不直接作为 pass 条件。`motion_direction_sweep.mapping` 是方向到 ID 的校准表，`unique_nonzero` 应等于 8。`motion_complex_toy.cases` 中每个 case 记录 `expected_id/stable_id/correct_rate/hit_rate`；脚本要求所有 case 的 `correct_rate >= 0.70` 且 `hit_rate >= 0.70`，否则 `passed=False`。
+
+参数扫参结果显示当前运动方向检测的可靠区间较窄：主 sweep 中 27 个组合仅 3 个通过，均为 `noise=0` 且 `speed=1`，对应 `box_size=3/5/7`。无噪声时，`speed=1` 基本稳定；`speed>=2` 后主要失败在对角方向，典型失败方向为 `down_right/down_left/up_right/up_left`，但水平和竖直方向仍多能保持正确。加入噪声后边界明显收缩：speed=1 低噪声细扫显示，`noise_prob=0.00025` 时部分 box size 仍可通过，`noise_prob=0.0005` 时 `box_size=3/5/7` 全部失败，说明噪声失败边界大致在 `0.00025-0.0005` 之间，即约 `1.7-3.5` 个随机 spike/frame。总体结论是：当前 motion 模块能稳定检测干净、单目标、低速运动；高速对角运动和稀疏随机噪声会显著降低方向分类正确率。
 
 在 box_size=5、speed=[1,2]、noise_prob=0.001 的设置下，motion complex 压力测试失败；即使 noise_prob=0，speed 2 的部分对角方向仍然存在方向混淆。

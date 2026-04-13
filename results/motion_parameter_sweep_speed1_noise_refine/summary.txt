@@ -1,0 +1,25 @@
+device: cuda
+mapping: {'right': 7, 'left': 3, 'down': 1, 'up': 5, 'down_right': 8, 'down_left': 2, 'up_right': 6, 'up_left': 4}
+speeds: [1]
+box_sizes: [3, 5, 7]
+noise_probs: [0.0, 0.00025, 0.0005, 0.001]
+num_frames: 24
+warmup: 6
+correct_thr: 0.7
+hit_thr: 0.7
+passing_combinations: 5
+failing_combinations: 7
+passing:
+  {'speed': 1, 'box_size': 3, 'noise_prob': 0.0, 'min_correct_rate': 1.0, 'mean_correct_rate': 1.0, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': '', 'passed': True}
+  {'speed': 1, 'box_size': 5, 'noise_prob': 0.0, 'min_correct_rate': 1.0, 'mean_correct_rate': 1.0, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': '', 'passed': True}
+  {'speed': 1, 'box_size': 7, 'noise_prob': 0.0, 'min_correct_rate': 0.8888888888888888, 'mean_correct_rate': 0.9861111111111112, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': '', 'passed': True}
+  {'speed': 1, 'box_size': 3, 'noise_prob': 0.00025, 'min_correct_rate': 0.7777777777777778, 'mean_correct_rate': 0.9027777777777778, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': '', 'passed': True}
+  {'speed': 1, 'box_size': 7, 'noise_prob': 0.00025, 'min_correct_rate': 0.7222222222222222, 'mean_correct_rate': 0.9444444444444444, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': '', 'passed': True}
+failing:
+  {'speed': 1, 'box_size': 5, 'noise_prob': 0.00025, 'min_correct_rate': 0.6111111111111112, 'mean_correct_rate': 0.875, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': 'up', 'passed': False}
+  {'speed': 1, 'box_size': 3, 'noise_prob': 0.0005, 'min_correct_rate': 0.5, 'mean_correct_rate': 0.8541666666666667, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': 'up', 'passed': False}
+  {'speed': 1, 'box_size': 5, 'noise_prob': 0.0005, 'min_correct_rate': 0.6111111111111112, 'mean_correct_rate': 0.8680555555555556, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': 'down_left up_right', 'passed': False}
+  {'speed': 1, 'box_size': 7, 'noise_prob': 0.0005, 'min_correct_rate': 0.6666666666666666, 'mean_correct_rate': 0.8680555555555556, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': 'down up_left', 'passed': False}
+  {'speed': 1, 'box_size': 3, 'noise_prob': 0.001, 'min_correct_rate': 0.3333333333333333, 'mean_correct_rate': 0.7847222222222222, 'min_hit_rate': 0.8333333333333334, 'mean_hit_rate': 0.9791666666666667, 'failed_directions': 'left down_right down_left', 'passed': False}
+  {'speed': 1, 'box_size': 5, 'noise_prob': 0.001, 'min_correct_rate': 0.6111111111111112, 'mean_correct_rate': 0.8194444444444444, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': 'up_left', 'passed': False}
+  {'speed': 1, 'box_size': 7, 'noise_prob': 0.001, 'min_correct_rate': 0.4444444444444444, 'mean_correct_rate': 0.763888888888889, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_directions': 'right down_right down_left', 'passed': False}

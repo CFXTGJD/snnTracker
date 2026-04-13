@@ -1,0 +1,28 @@
+speed,box_size,noise_prob,min_correct_rate,mean_correct_rate,min_hit_rate,mean_hit_rate,failed_directions,passed
+1,3,0.0,1.0,1.0,1.0,1.0,,True
+2,3,0.0,0.5,0.8125,1.0,1.0,down_right down_left up_left,False
+3,3,0.0,0.2222222222222222,0.6527777777777778,1.0,1.0,down_right down_left up_right up_left,False
+1,5,0.0,1.0,1.0,1.0,1.0,,True
+2,5,0.0,0.3888888888888889,0.7708333333333334,1.0,1.0,down_right down_left up_right up_left,False
+3,5,0.0,0.16666666666666666,0.6319444444444444,1.0,1.0,down_right down_left up_right up_left,False
+1,7,0.0,0.8888888888888888,0.9861111111111112,1.0,1.0,,True
+2,7,0.0,0.2777777777777778,0.7847222222222222,1.0,1.0,down_right down_left up_left,False
+3,7,0.0,0.1111111111111111,0.6875,1.0,1.0,down_right down_left up_left,False
+1,3,0.001,0.3333333333333333,0.7847222222222222,0.8333333333333334,0.9791666666666667,left down_right down_left,False
+2,3,0.001,0.3333333333333333,0.5833333333333333,0.5555555555555556,0.875,up down_right down_left up_right up_left,False
+3,3,0.001,0.16666666666666666,0.3472222222222222,0.5,0.8402777777777777,left down up down_right down_left up_right up_left,False
+1,5,0.001,0.6111111111111112,0.8194444444444444,1.0,1.0,up_left,False
+2,5,0.001,0.2222222222222222,0.6458333333333333,1.0,1.0,down_right down_left up_right up_left,False
+3,5,0.001,0.1111111111111111,0.625,1.0,1.0,right down_right down_left up_left,False
+1,7,0.001,0.4444444444444444,0.763888888888889,1.0,1.0,right down_right down_left,False
+2,7,0.001,0.0,0.5625,1.0,1.0,right down down_right down_left up_left,False
+3,7,0.001,0.0,0.6736111111111112,1.0,1.0,right down_right up_left,False
+1,3,0.003,0.0,0.4513888888888889,0.9074074074074073,0.9722222222222222,right left up down_left up_right up_left,False
+2,3,0.003,0.05555555555555555,0.34027777777777773,0.5555555555555556,0.7152777777777778,right left down_right down_left up_right up_left,False
+3,3,0.003,0.0,0.2708333333333333,0.6666666666666666,0.7847222222222222,left down up down_right down_left up_right up_left,False
+1,5,0.003,0.2777777777777778,0.6319444444444444,1.0,1.0,right down down_left up_right,False
+2,5,0.003,0.0,0.38888888888888895,1.0,1.0,left down up down_right down_left up_right up_left,False
+3,5,0.003,0.05555555555555555,0.3125,1.0,1.0,right left down down_right up_right up_left,False
+1,7,0.003,0.3888888888888889,0.6527777777777779,1.0,1.0,up down_right down_left up_right up_left,False
+2,7,0.003,0.16666666666666666,0.6319444444444445,1.0,1.0,left up down_right up_left,False
+3,7,0.003,0.1111111111111111,0.4791666666666667,1.0,1.0,left down_right down_left up_right up_left,False
