@@ -3,6 +3,14 @@ stp_toy:
   static_late_mean: 0.0000
   moving_late_mean: 0.8364
   passed: True
+stp_complex_toy:
+  static_late_mean: 0.0000
+  noise_mean: 0.0380
+  moving1_mean: 1.0000
+  moving2_mean: 0.8500
+  burst_peak: 1.0000
+  suppression_ratio: 0.0875
+  passed: True
 motion_toy:
   stable_dir: 7
   mean_dx: -0.0000
@@ -13,3 +21,8 @@ motion_direction_sweep:
   mapping: {'right': 7, 'left': 3, 'down': 1, 'up': 5, 'down_right': 8, 'down_left': 2, 'up_right': 6, 'up_left': 4}
   unique_nonzero: 8
   passed: True
+motion_complex_toy:
+  cases: {'right': {'speed_1': {'expected_id': 7, 'stable_id': 7, 'correct_rate': 0.7083333333333334, 'hit_rate': 1.0}, 'speed_2': {'expected_id': 7, 'stable_id': 7, 'correct_rate': 0.9166666666666666, 'hit_rate': 1.0}}, 'left': {'speed_1': {'expected_id': 3, 'stable_id': 2, 'correct_rate': 0.16666666666666666, 'hit_rate': 1.0}, 'speed_2': {'expected_id': 3, 'stable_id': 3, 'correct_rate': 0.875, 'hit_rate': 1.0}}, 'down': {'speed_1': {'expected_id': 1, 'stable_id': 1, 'correct_rate': 1.0, 'hit_rate': 1.0}, 'speed_2': {'expected_id': 1, 'stable_id': 1, 'correct_rate': 0.875, 'hit_rate': 1.0}}, 'up': {'speed_1': {'expected_id': 5, 'stable_id': 5, 'correct_rate': 0.7916666666666666, 'hit_rate': 1.0}, 'speed_2': {'expected_id': 5, 'stable_id': 5, 'correct_rate': 1.0, 'hit_rate': 1.0}}, 'down_right': {'speed_1': {'expected_id': 8, 'stable_id': 7, 'correct_rate': 0.5, 'hit_rate': 1.0}, 'speed_2': {'expected_id': 8, 'stable_id': 7, 'correct_rate': 0.2916666666666667, 'hit_rate': 1.0}}, 'down_left': {'speed_1': {'expected_id': 2, 'stable_id': 2, 'correct_rate': 0.625, 'hit_rate': 1.0}, 'speed_2': {'expected_id': 2, 'stable_id': 2, 'correct_rate': 0.5, 'hit_rate': 1.0}}, 'up_right': {'speed_1': {'expected_id': 6, 'stable_id': 5, 'correct_rate': 0.4166666666666667, 'hit_rate': 1.0}, 'speed_2': {'expected_id': 6, 'stable_id': 6, 'correct_rate': 0.9166666666666666, 'hit_rate': 1.0}}, 'up_left': {'speed_1': {'expected_id': 4, 'stable_id': 4, 'correct_rate': 0.9166666666666666, 'hit_rate': 1.0}, 'speed_2': {'expected_id': 4, 'stable_id': 3, 'correct_rate': 0.25, 'hit_rate': 1.0}}}
+  min_correct_rate: 0.1667
+  min_hit_rate: 1.0000
+  passed: False
