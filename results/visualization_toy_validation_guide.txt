@@ -6,9 +6,11 @@
 
 `plot_spike_dataset.py` 验证数据读取和可视化是否正常：能否从 `scene_dir/spikes.dat` 按 `config.yaml` 的 `spike_h/spike_w` 正确解码；能否生成采样 spike 帧、每帧活跃像素曲线、空间累积热力图、时间投影图；如果存在 `spikes_gt.txt`，还能检查 GT 框和 spike 底图是否对齐。
 
-`toy_validate_modules.py` 验证模块级行为：STP toy 检查静态高频闪烁是否被适应抑制、运动或突发目标是否被保留；motion toy 检查简单运动目标是否形成稳定方向；direction sweep 建立输入方向到 `motion ID` 的实测映射；complex motion toy 检查 8 个方向、2 个速度、带稀疏随机噪声条件下的方向恢复鲁棒性。`tools/motion_parameter_sweep.py` 进一步扫描 `speed/object size/noise probability`，用于定位方向检测失败边界。当前 `motion_direction_sweep` 的实测映射为：`right -> 7`，`left -> 3`，`down -> 1`，`up -> 5`，`down_right -> 8`，`down_left -> 2`，`up_right -> 6`，`up_left -> 4`。
+`toy_validate_modules.py` 验证模块级行为：STP toy 检查静态高频闪烁是否被适应抑制、运动或突发目标是否被保留；motion toy 检查简单运动目标是否形成稳定方向；direction sweep 建立输入方向到 `motion ID` 的实测映射；complex motion toy 检查 8 个方向、2 个速度、带稀疏随机噪声条件下的方向恢复鲁棒性。`tools/motion_parameter_sweep.py` 进一步扫描 `speed/object size/noise probability`，用于定位方向检测失败边界。`tools/motion_multi_object_no_overlap_sweep.py` 验证同帧多目标但轨迹不重叠时的局部方向估计；`tools/motion_multi_object_overlap_sweep.py` 验证目标轨迹交叉/重叠时的方向保持能力。当前 `motion_direction_sweep` 的实测映射为：`right -> 7`，`left -> 3`，`down -> 1`，`up -> 5`，`down_right -> 8`，`down_left -> 2`，`up_right -> 6`，`up_left -> 4`。
 
 `motion_complex_toy_validation` 的构造方式是 16 个独立 case，而不是一个多目标混合场景：8 个方向分别为 `right/left/down/up/down_right/down_left/up_right/up_left`，每个方向测试 `speed 1` 和 `speed 2` 两种速度；每个 case 中有一个 `5x5` 移动方块目标，从画面中心附近出发，同时叠加概率为 `0.001` 的稀疏随机噪声。该设计用于检查单目标方向估计在速度变化和轻噪声下是否稳定，不验证多目标分离能力。
+
+多目标无重叠 sweep 在同一帧放置 4 个互不重叠目标：`right/left/down_right/up_left`。多目标重叠 sweep 使用 3 个两目标交叉场景：`horizontal_cross` 为 `right vs left`，`vertical_cross` 为 `down vs up`，`diagonal_cross` 为 `down_right vs up_left`。两者的扫参范围由单目标失败边界收窄得到：`speed=1/2`，`box_size=3/5/7`，`noise_prob=0/0.00025/0.0005`。
 
 # Mapping to Original Code
 
@@ -26,6 +28,8 @@
 | 方向 ID 映射 | `run_motion_direction_sweep()` | `motion_estimation.local_wta()` |
 | 复杂方向压力测试 | `run_motion_complex_toy()` | `motion_weight`, `motion_id`, `motion_vector_max` |
 | 方向检测参数扫参 | `tools/motion_parameter_sweep.py` | `motion_estimation.stdp_tracking()`, `motion_estimation.local_wta()` |
+| 多目标无重叠扫参 | `tools/motion_multi_object_no_overlap_sweep.py` | `motion_id` per object mask |
+| 多目标轨迹重叠扫参 | `tools/motion_multi_object_overlap_sweep.py` | `motion_id` per object mask, overlap / non-overlap metrics |
 
 # How to Run
 
@@ -33,6 +37,8 @@
 python visualization/plot_spike_dataset.py --scene_dir motVidarReal2025/spike59 --begin_idx 0 --num_frames 300 --num_samples 8 --output_dir results/spike_dataset_viz
 python tools/toy_validate_modules.py --output_dir results/toy_module_validation
 python tools/motion_parameter_sweep.py --output_dir results/motion_parameter_sweep
+python tools/motion_multi_object_no_overlap_sweep.py --output_dir results/motion_multi_object_no_overlap_sweep
+python tools/motion_multi_object_overlap_sweep.py --output_dir results/motion_multi_object_overlap_sweep
 ```
 
 | Parameter | Script | Default | Description |
@@ -48,6 +54,8 @@ python tools/motion_parameter_sweep.py --output_dir results/motion_parameter_swe
 | `--noise_probs` | `motion_parameter_sweep.py` | `"0 0.001 0.003"` | 每像素随机 spike 概率 |
 | `--correct_thr` | `motion_parameter_sweep.py` | `0.70` | 每个方向正确率通过阈值 |
 | `--hit_thr` | `motion_parameter_sweep.py` | `0.70` | 每个方向有效 motion 输出通过阈值 |
+| `--speeds` | multi-object sweep | `"1 2"` | 多目标测试速度范围，聚焦已知失败边界 |
+| `--noise_probs` | multi-object sweep | `"0 0.00025 0.0005"` | 多目标测试噪声范围，聚焦低噪声边界 |
 
 # Outputs
 
@@ -73,6 +81,16 @@ results/motion_parameter_sweep/
 ├── motion_sweep_noise_0.001.png         # noise=0.001 时的方向检测鲁棒性热力图。
 ├── motion_sweep_noise_0.003.png         # noise=0.003 时的方向检测鲁棒性热力图。
 └── summary.txt                          # 参数范围、通过组合、失败组合和失败方向摘要。
+results/motion_multi_object_no_overlap_sweep/
+├── multi_no_overlap_cases.csv           # 每个目标的 expected_id、stable_id、correct_rate、hit_rate。
+├── multi_no_overlap_aggregate.csv       # 每个 speed/box/noise 组合的最小正确率、失败目标和 pass/fail。
+├── multi_no_overlap_noise_*.png         # 无重叠多目标在不同噪声下的 speed/box 热力图。
+└── summary.txt                          # 无重叠多目标通过组合和失败组合摘要。
+results/motion_multi_object_overlap_sweep/
+├── multi_overlap_cases.csv              # 每个交叉场景目标的全帧与非重叠区域指标。
+├── multi_overlap_aggregate.csv          # 每个 speed/box/noise 组合的重叠测试汇总。
+├── multi_overlap_noise_*.png            # 轨迹重叠场景在不同噪声下的 speed/box 热力图。
+└── summary.txt                          # 重叠多目标通过组合和失败组合摘要。
 ```
 
 当前已运行所有本地数据集可视化：`badminton/cpl1/cplCam/pingpong/rotTrans/spike59` 均生成 montage、activity curve、spatial heatmap 和 temporal projection；其中 `rotTrans` 与 `spike59` 存在 `spikes_gt.txt`，额外生成 GT overlay。`tools/toy_validate_modules.py` 当前输出显示 STP 简单与复杂验证通过，motion 简单验证和 direction sweep 通过，motion complex 压力测试未通过。
@@ -82,6 +100,8 @@ results/motion_parameter_sweep/
 `motion_toy_validation.png` 左上/右上是运动方块起止帧；左下 `Dominant Motion ID per Frame` 横轴为 frame，纵轴为 motion ID，稳定水平线表示方向估计稳定；右下 `Recovered Motion Statistics` 横轴为 frame，纵轴为数值，`mean dx/mean dy` 表示有效运动像素的平均运动向量分量，`active motion pixels` 表示有效运动像素数量。`motion_direction_sweep.png` 横轴为输入方向，纵轴为 recovered motion ID；每个方向应恢复出非零且互不重复的 ID。`motion_complex_toy_validation.png` 三个热力图横轴均为 `speed 1/speed 2`，纵轴均为 8 个输入方向；左图颜色和值为 `correct_rate`，中图为 `hit_rate`，右图为稳定恢复出的 `motion ID`。
 
 `motion_parameter_sweep` 当前默认扫描 `speed=1/2/3`、`box_size=3/5/7`、`noise_prob=0/0.001/0.003`，共 27 个组合，每个组合跑 8 个方向；另做了 speed=1 低噪声细扫：`noise_prob=0/0.00025/0.0005/0.001`。扫参图中横轴为 speed，纵轴为 box size；左图为 8 个方向中的最小 `correct_rate`，中图为最小 `hit_rate`，右图为该组合是否整体通过。`noise_prob=0.001` 对应 `72x96` 图像中约 `6.9` 个随机 spike/frame，`0.003` 约 `20.7` 个随机 spike/frame。
+
+多目标无重叠图 `multi_no_overlap_noise_*.png` 的横轴为 speed，纵轴为 box size；左图是 4 个目标中的最小 `correct_rate`，中图是最小 `hit_rate`，右图是该组合是否所有目标通过。多目标重叠图 `multi_overlap_noise_*.png` 的横轴和纵轴相同；左图是所有交叉目标的全帧最小 `correct_rate`，中图是排除物理重叠像素后的最小 `non_overlap_correct_rate`，右图是整体 pass mask。若全帧和非重叠区域都低，说明不是单纯遮挡导致，而是交叉场景下方向估计本身不稳定。
 
 # How to Interpret Results
 
@@ -96,3 +116,7 @@ Motion 结果中，`motion_direction_sweep` 的 mapping 是判读 `motion ID` �
 参数扫参结果显示当前运动方向检测的可靠区间较窄：主 sweep 中 27 个组合仅 3 个通过，均为 `noise=0` 且 `speed=1`，对应 `box_size=3/5/7`。无噪声时，`speed=1` 基本稳定；`speed>=2` 后主要失败在对角方向，典型失败方向为 `down_right/down_left/up_right/up_left`，但水平和竖直方向仍多能保持正确。加入噪声后边界明显收缩：speed=1 低噪声细扫显示，`noise_prob=0.00025` 时部分 box size 仍可通过，`noise_prob=0.0005` 时 `box_size=3/5/7` 全部失败，说明噪声失败边界大致在 `0.00025-0.0005` 之间，即约 `1.7-3.5` 个随机 spike/frame。总体结论是：当前 motion 模块能稳定检测干净、单目标、低速运动；高速对角运动和稀疏随机噪声会显著降低方向分类正确率。
 
 在 box_size=5、speed=[1,2]、noise_prob=0.001 的设置下，motion complex 压力测试失败；即使 noise_prob=0，speed 2 的部分对角方向仍然存在方向混淆。
+
+多目标无重叠 sweep 共 18 个组合，其中 7 个通过、11 个失败。无噪声且 `speed=1` 的 `box_size=3/5/7` 全部通过；`speed=2` 全部失败，主要失败对象为 `obj_right`、`obj_down_right`、`obj_up_left`。在 `noise_prob=0.00025` 时，`box_size=3/7` 仍通过，`box_size=5` 因 `obj_down_right` 失败；在 `noise_prob=0.0005` 时，`box_size=5/7` 通过但 `box_size=3` 失败。结论是：同帧多目标但无重叠时，低速仍可工作，但对角方向和 speed=2 仍是主要边界。
+
+多目标重叠 sweep 共 18 个组合，其中 4 个通过、14 个失败。无噪声且 `speed=1` 的 `box_size=3/5/7` 全部通过；`speed=2` 下水平、垂直、对角交叉全部失败。加噪声后，`noise_prob=0.00025` 下全部失败，常见失败目标包括 `vertical_cross:up_obj` 与 `diagonal_cross` 两个目标；`noise_prob=0.0005` 下仅 `speed=1, box_size=7` 通过。该结果说明轨迹交叉比无重叠更严格，轻噪声会明显放大方向混淆；但在干净、低速条件下，交叉场景仍有可用区间。

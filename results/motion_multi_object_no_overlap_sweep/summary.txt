@@ -1,0 +1,28 @@
+device: cuda
+mapping: {'right': 7, 'left': 3, 'down': 1, 'up': 5, 'down_right': 8, 'down_left': 2, 'up_right': 6, 'up_left': 4}
+objects: {'obj_right': {'direction': 'right', 'start': (12, 8)}, 'obj_left': {'direction': 'left', 'start': (12, 82)}, 'obj_down_right': {'direction': 'down_right', 'start': (40, 8)}, 'obj_up_left': {'direction': 'up_left', 'start': (62, 82)}}
+speeds: [1, 2]
+box_sizes: [3, 5, 7]
+noise_probs: [0.0, 0.00025, 0.0005]
+passing_combinations: 7
+failing_combinations: 11
+passing:
+  {'speed': 1, 'box_size': 3, 'noise_prob': 0.0, 'min_correct_rate': 1.0, 'mean_correct_rate': 1.0, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': '', 'passed': True}
+  {'speed': 1, 'box_size': 5, 'noise_prob': 0.0, 'min_correct_rate': 1.0, 'mean_correct_rate': 1.0, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': '', 'passed': True}
+  {'speed': 1, 'box_size': 7, 'noise_prob': 0.0, 'min_correct_rate': 1.0, 'mean_correct_rate': 1.0, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': '', 'passed': True}
+  {'speed': 1, 'box_size': 3, 'noise_prob': 0.00025, 'min_correct_rate': 0.7777777777777778, 'mean_correct_rate': 0.9027777777777778, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': '', 'passed': True}
+  {'speed': 1, 'box_size': 7, 'noise_prob': 0.00025, 'min_correct_rate': 0.7777777777777778, 'mean_correct_rate': 0.875, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': '', 'passed': True}
+  {'speed': 1, 'box_size': 5, 'noise_prob': 0.0005, 'min_correct_rate': 0.7777777777777778, 'mean_correct_rate': 0.8888888888888888, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': '', 'passed': True}
+  {'speed': 1, 'box_size': 7, 'noise_prob': 0.0005, 'min_correct_rate': 0.8888888888888888, 'mean_correct_rate': 0.9444444444444444, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': '', 'passed': True}
+failing:
+  {'speed': 2, 'box_size': 3, 'noise_prob': 0.0, 'min_correct_rate': 0.5555555555555556, 'mean_correct_rate': 0.6944444444444444, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_right obj_down_right', 'passed': False}
+  {'speed': 2, 'box_size': 5, 'noise_prob': 0.0, 'min_correct_rate': 0.5, 'mean_correct_rate': 0.6666666666666666, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_right obj_down_right', 'passed': False}
+  {'speed': 2, 'box_size': 7, 'noise_prob': 0.0, 'min_correct_rate': 0.3888888888888889, 'mean_correct_rate': 0.6527777777777778, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_right obj_down_right', 'passed': False}
+  {'speed': 2, 'box_size': 3, 'noise_prob': 0.00025, 'min_correct_rate': 0.5555555555555556, 'mean_correct_rate': 0.6527777777777778, 'min_hit_rate': 0.8888888888888888, 'mean_hit_rate': 0.9583333333333333, 'failed_objects': 'obj_right obj_down_right obj_up_left', 'passed': False}
+  {'speed': 1, 'box_size': 5, 'noise_prob': 0.00025, 'min_correct_rate': 0.6111111111111112, 'mean_correct_rate': 0.9027777777777778, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_down_right', 'passed': False}
+  {'speed': 2, 'box_size': 5, 'noise_prob': 0.00025, 'min_correct_rate': 0.4444444444444444, 'mean_correct_rate': 0.625, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_down_right obj_up_left', 'passed': False}
+  {'speed': 2, 'box_size': 7, 'noise_prob': 0.00025, 'min_correct_rate': 0.2222222222222222, 'mean_correct_rate': 0.5555555555555556, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_right obj_down_right obj_up_left', 'passed': False}
+  {'speed': 1, 'box_size': 3, 'noise_prob': 0.0005, 'min_correct_rate': 0.5555555555555556, 'mean_correct_rate': 0.7777777777777777, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_down_right obj_up_left', 'passed': False}
+  {'speed': 2, 'box_size': 3, 'noise_prob': 0.0005, 'min_correct_rate': 0.4444444444444444, 'mean_correct_rate': 0.6527777777777778, 'min_hit_rate': 0.9074074074074073, 'mean_hit_rate': 0.962962962962963, 'failed_objects': 'obj_right obj_down_right', 'passed': False}
+  {'speed': 2, 'box_size': 5, 'noise_prob': 0.0005, 'min_correct_rate': 0.3333333333333333, 'mean_correct_rate': 0.5833333333333333, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_left obj_down_right obj_up_left', 'passed': False}
+  {'speed': 2, 'box_size': 7, 'noise_prob': 0.0005, 'min_correct_rate': 0.4444444444444444, 'mean_correct_rate': 0.5833333333333333, 'min_hit_rate': 1.0, 'mean_hit_rate': 1.0, 'failed_objects': 'obj_left obj_down_right obj_up_left', 'passed': False}
