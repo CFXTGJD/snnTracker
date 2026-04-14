@@ -311,33 +311,44 @@ def inspect_in_file(path: Path, event_e: Path, event_i: Path, report: Report) ->
     return summary
 
 
-def check_population_match(event_summary: dict[str, Any], gsize: int, report: Report) -> None:
+def check_population_match(event_summary: dict[str, Any], grid_shape: tuple[int, int], report: Report) -> None:
+    grid_h, grid_w = int(grid_shape[0]), int(grid_shape[1])
     if event_summary["num_events"] == 0:
         report.warn("event/grid match", "zero-event file cannot validate coordinate coverage")
         return
 
-    x_ok = 0 <= event_summary["x_min"] and event_summary["x_max"] < gsize
-    y_ok = 0 <= event_summary["y_min"] and event_summary["y_max"] < gsize
+    x_ok = 0 <= event_summary["x_min"] and event_summary["x_max"] < grid_w
+    y_ok = 0 <= event_summary["y_min"] and event_summary["y_max"] < grid_h
     if x_ok and y_ok:
-        report.pass_("event/grid coordinate match", f"x/y are within [0,{gsize - 1}]")
+        report.pass_("event/grid coordinate match", f"x within [0,{grid_w - 1}], y within [0,{grid_h - 1}]")
     else:
         report.fail(
             "event/grid coordinate match",
             f"x=[{event_summary['x_min']},{event_summary['x_max']}], "
-            f"y=[{event_summary['y_min']},{event_summary['y_max']}], gsize={gsize}",
+            f"y=[{event_summary['y_min']},{event_summary['y_max']}], grid={grid_h}x{grid_w}",
         )
 
     shape = event_summary.get("frames_shape")
     if shape and len(shape) == 3:
         _, height, width = shape
-        if height == gsize and width == gsize:
+        if height == grid_h and width == grid_w:
             report.pass_("frames_shape/grid match", f"{height}x{width}")
         else:
             report.warn(
                 "frames_shape/grid match",
-                f"frames are {height}x{width}, network grid is {gsize}x{gsize}; "
+                f"frames are {height}x{width}, network grid is {grid_h}x{grid_w}; "
                 "需要确认 simulator 如何把事件坐标映射到 neuron index",
             )
+
+
+def infer_grid_shape(event_summary: dict[str, Any] | None, explicit: tuple[int, int] | None, fallback_gsize: int) -> tuple[int, int]:
+    if explicit is not None:
+        return explicit
+    if event_summary is not None:
+        shape = event_summary.get("frames_shape")
+        if shape and len(shape) == 3:
+            return int(shape[1]), int(shape[2])
+    return int(fallback_gsize), int(fallback_gsize)
 
 
 def make_synthetic_event_file(path: Path, *, frames: int, height: int, width: int) -> Path:
@@ -368,7 +379,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--synthetic-height", type=int, default=16)
     parser.add_argument("--synthetic-width", type=int, default=16)
     parser.add_argument("--output-dir", type=Path, default=Path("translation/debug_outputs"))
-    parser.add_argument("--gsize", type=int, default=16, help="Chen/Gong grid size for debug preprocessing.")
+    parser.add_argument("--gsize", type=int, default=16, help="Fallback square grid size.")
+    parser.add_argument("--grid-shape", nargs=2, type=int, metavar=("HEIGHT", "WIDTH"), help="Override rectangular grid shape.")
     parser.add_argument("--step-tot", type=int, default=25000)
     parser.add_argument("--preview-frames", type=int, default=8)
     parser.add_argument("--skip-build", action="store_true", help="Only inspect event files, do not build *_in.h5.")
@@ -400,16 +412,18 @@ def main() -> int:
     event_i = args.event_i or event_e
     event_summary_e = inspect_event_file(event_e, report)
     event_summary_i = inspect_event_file(event_i, report) if event_i != event_e else event_summary_e
+    explicit_grid_shape = None if args.grid_shape is None else tuple(args.grid_shape)
+    grid_shape = infer_grid_shape(event_summary_e, explicit_grid_shape, args.gsize)
     if event_summary_e is not None:
         preview_path = output_dir / f"{event_e.stem}_preview.png"
         save_event_preview(event_e, preview_path, max_frames=args.preview_frames)
         report.pass_("event preview image", str(preview_path))
-        check_population_match(event_summary_e, args.gsize, report)
+        check_population_match(event_summary_e, grid_shape, report)
 
     in_summary = None
     in_path = output_dir / "debug_spikenet_in.h5"
     if not args.skip_build and event_summary_e is not None and event_summary_i is not None:
-        cfg = ChenGong2019Config(gsize=args.gsize, step_tot=args.step_tot)
+        cfg = ChenGong2019Config(gsize=args.gsize, grid_shape=grid_shape, step_tot=args.step_tot)
         build_chen_gong_2019_input(in_path, event_e, event_i, config=cfg, loop_num=1, seed=1)
         report.pass_("preprocessing build", str(in_path))
         in_summary = inspect_in_file(in_path, event_e, event_i, report)

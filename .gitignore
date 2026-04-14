@@ -12,3 +12,5 @@ events.out.tfevents.*
 data/log_pkuvidar/
 motVidarReal2025/
 *.zip
+
+log.txt

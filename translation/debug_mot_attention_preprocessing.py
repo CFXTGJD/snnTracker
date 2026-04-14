@@ -139,6 +139,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scale-w", type=int, default=1)
     parser.add_argument("--scale-h", type=int, default=1)
     parser.add_argument("--spikenet-size", type=int, default=32)
+    parser.add_argument("--square-debug", action="store_true", help="Also build a nearest-neighbor square-grid diagnostic input.")
+    parser.add_argument("--max-build-neurons", type=int, default=5000, help="Skip full in.h5 connectivity build above this grid area.")
     parser.add_argument("--step-tot", type=int, default=25000)
     parser.add_argument("--output-dir", type=Path, default=Path("translation/debug_outputs/mot_attention"))
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
@@ -182,9 +184,6 @@ def main() -> int:
     save_event_preview(native_event, native_preview)
     report.pass_("native pre-attention preview", str(native_preview))
 
-    # Native MOT is 250x400, while the translated Chen/Gong preprocessing is a
-    # square-grid model. Keep the native validation explicit, then create a
-    # nearest-neighbor square diagnostic input for the translated preprocessing.
     if native_summary is not None:
         x_ok_native = 0 <= native_summary["x_min"] and native_summary["x_max"] < spike_w
         y_ok_native = 0 <= native_summary["y_min"] and native_summary["y_max"] < spike_h
@@ -196,33 +195,41 @@ def main() -> int:
                 f"x=[{native_summary['x_min']},{native_summary['x_max']}], "
                 f"y=[{native_summary['y_min']},{native_summary['y_max']}], frame={spike_h}x{spike_w}",
             )
-        if spike_h != spike_w:
-            report.warn(
-                "native event/Chen-Gong grid match",
-                f"native pre-attention frames are {spike_h}x{spike_w}, but translated Chen/Gong preprocessing "
-                "uses a square grid. The script builds a nearest-neighbor square diagnostic input below.",
-            )
-        else:
-            check_population_match(native_summary, spike_h, report)
+        check_population_match(native_summary, (spike_h, spike_w), report)
 
-    square_frames = resize_binary_frames(lif_frames, args.spikenet_size)
-    square_event = args.output_dir / f"{scene}_pre_attention_square{args.spikenet_size}.h5"
-    write_event_hdf5(square_event, square_frames, dt=1, start_time=args.calibration_time, threshold=0, pol_value=1)
-    square_summary = inspect_event_file(square_event, report)
-    square_preview = args.output_dir / f"{scene}_pre_attention_square{args.spikenet_size}_preview.png"
-    save_event_preview(square_event, square_preview)
-    report.pass_("square pre-attention preview", str(square_preview))
-    if square_summary is not None:
-        check_population_match(square_summary, args.spikenet_size, report)
+    in_summary = None
+    if spike_h * spike_w <= args.max_build_neurons:
+        in_path = args.output_dir / f"{scene}_{spike_h}x{spike_w}_debug_in.h5"
+        cfg = ChenGong2019Config(grid_shape=(spike_h, spike_w), step_tot=args.step_tot)
+        build_chen_gong_2019_input(in_path, native_event, native_event, config=cfg, loop_num=1, seed=1)
+        report.pass_("translation preprocessing build", str(in_path))
+        in_summary = inspect_in_file(in_path, native_event, native_event, report)
+        tree_path = args.output_dir / f"{scene}_{spike_h}x{spike_w}_debug_in_tree.txt"
+        tree_path.write_text("\n".join(h5_tree(in_path)), encoding="utf-8")
+        report.pass_("translation in.h5 tree", str(tree_path))
+    else:
+        report.warn(
+            "translation preprocessing build",
+            f"skipped full connectivity build for {spike_h}x{spike_w}={spike_h * spike_w} grid cells; "
+            f"use --scale-w/--scale-h or raise --max-build-neurons for a heavier run",
+        )
 
-    in_path = args.output_dir / f"{scene}_square{args.spikenet_size}_debug_in.h5"
-    cfg = ChenGong2019Config(gsize=args.spikenet_size, step_tot=args.step_tot)
-    build_chen_gong_2019_input(in_path, square_event, square_event, config=cfg, loop_num=1, seed=1)
-    report.pass_("translation preprocessing build", str(in_path))
-    in_summary = inspect_in_file(in_path, square_event, square_event, report)
-    tree_path = args.output_dir / f"{scene}_square{args.spikenet_size}_debug_in_tree.txt"
-    tree_path.write_text("\n".join(h5_tree(in_path)), encoding="utf-8")
-    report.pass_("translation in.h5 tree", str(tree_path))
+    square_summary = None
+    if args.square_debug:
+        square_frames = resize_binary_frames(lif_frames, args.spikenet_size)
+        square_event = args.output_dir / f"{scene}_pre_attention_square{args.spikenet_size}.h5"
+        write_event_hdf5(square_event, square_frames, dt=1, start_time=args.calibration_time, threshold=0, pol_value=1)
+        square_summary = inspect_event_file(square_event, report)
+        square_preview = args.output_dir / f"{scene}_pre_attention_square{args.spikenet_size}_preview.png"
+        save_event_preview(square_event, square_preview)
+        report.pass_("square pre-attention preview", str(square_preview))
+        if square_summary is not None:
+            check_population_match(square_summary, (args.spikenet_size, args.spikenet_size), report)
+
+        square_in_path = args.output_dir / f"{scene}_square{args.spikenet_size}_debug_in.h5"
+        square_cfg = ChenGong2019Config(gsize=args.spikenet_size, step_tot=args.step_tot)
+        build_chen_gong_2019_input(square_in_path, square_event, square_event, config=square_cfg, loop_num=1, seed=1)
+        report.pass_("square translation preprocessing build", str(square_in_path))
 
     payload = {
         "scene": scene,

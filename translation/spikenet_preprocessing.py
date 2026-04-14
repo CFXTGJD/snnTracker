@@ -259,11 +259,16 @@ def matlab_population_coordinates(grid: np.ndarray, pop_zero_based: int) -> np.n
     return np.column_stack((rows, cols)).astype(np.float64)
 
 
-def periodic_distance_matrix(pre_coords: np.ndarray, post_coords: np.ndarray, grid_size: int) -> np.ndarray:
+def periodic_distance_matrix(
+    pre_coords: np.ndarray,
+    post_coords: np.ndarray,
+    grid_shape: tuple[int, int],
+) -> np.ndarray:
+    grid_h, grid_w = grid_shape
     dx = np.abs(pre_coords[:, None, 0] - post_coords[None, :, 0])
     dy = np.abs(pre_coords[:, None, 1] - post_coords[None, :, 1])
-    dx = np.minimum(dx, grid_size - dx)
-    dy = np.minimum(dy, grid_size - dy)
+    dx = np.minimum(dx, grid_h - dx)
+    dy = np.minimum(dy, grid_w - dy)
     return np.sqrt(dx * dx + dy * dy)
 
 
@@ -285,7 +290,7 @@ def generate_chen_gong_connections(
     rng = rng or np.random.default_rng()
     pre_coords = matlab_population_coordinates(grid, pop_pre - 1)
     post_coords = matlab_population_coordinates(grid, pop_post - 1)
-    grid_size = int(grid.shape[0])
+    grid_shape = (int(grid.shape[0]), int(grid.shape[1]))
 
     all_i: list[np.ndarray] = []
     all_j: list[np.ndarray] = []
@@ -295,7 +300,7 @@ def generate_chen_gong_connections(
         stop = min(start + post_chunk_size, len(post_coords))
         chunk = post_coords[start:stop]
         if pbc:
-            dist = periodic_distance_matrix(pre_coords, chunk, grid_size)
+            dist = periodic_distance_matrix(pre_coords, chunk, grid_shape)
         else:
             delta = pre_coords[:, None, :] - chunk[None, :, :]
             dist = np.sqrt(np.sum(delta * delta, axis=2))
@@ -335,6 +340,7 @@ def generate_chen_gong_connections(
 @dataclass(frozen=True)
 class ChenGong2019Config:
     gsize: int = 250
+    grid_shape: tuple[int, int] | None = None
     dt: float = 0.1
     step_tot: int = 100000
     alpha: float = 1.65
@@ -343,6 +349,18 @@ class ChenGong2019Config:
     sample_stop: int = 24000
     sample_stride: int = 10
     post_chunk_size: int = 512
+
+    @property
+    def resolved_grid_shape(self) -> tuple[int, int]:
+        if self.grid_shape is not None:
+            if len(self.grid_shape) != 2:
+                raise ValueError("grid_shape must be (height, width)")
+            grid_h, grid_w = int(self.grid_shape[0]), int(self.grid_shape[1])
+        else:
+            grid_h = grid_w = int(self.gsize)
+        if grid_h <= 0 or grid_w <= 0:
+            raise ValueError("grid dimensions must be positive")
+        return grid_h, grid_w
 
 
 def build_chen_gong_2019_input(
@@ -358,10 +376,10 @@ def build_chen_gong_2019_input(
     output_path = Path(output_path)
     path, rng = new_ygin_file(loop_num, output_dir=output_path.parent, filename=output_path.name, seed=seed)
 
-    gsize = int(config.gsize)
-    grid = np.zeros((gsize, gsize), dtype=np.int8)
+    grid_h, grid_w = config.resolved_grid_shape
+    grid = np.zeros((grid_h, grid_w), dtype=np.int8)
     grid[1::2, 1::2] = 1
-    n = np.asarray([int(3 / 4 * gsize * gsize), int(1 / 4 * gsize * gsize)], dtype=np.int64)
+    n = np.asarray([int(np.sum(grid == 0)), int(np.sum(grid == 1))], dtype=np.int64)
 
     write_synapse_model_choice(path, 2)
     write_basic_para(path, config.dt, config.step_tot, n)
@@ -489,12 +507,17 @@ def _main() -> None:
     parser.add_argument("output_h5")
     parser.add_argument("--ext-current-e", required=True)
     parser.add_argument("--ext-current-i", required=True)
-    parser.add_argument("--gsize", type=int, default=250)
+    parser.add_argument("--gsize", type=int, default=250, help="Square grid size. Ignored when --grid-shape is provided.")
+    parser.add_argument("--grid-shape", nargs=2, type=int, metavar=("HEIGHT", "WIDTH"))
     parser.add_argument("--step-tot", type=int, default=100000)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
 
-    cfg = ChenGong2019Config(gsize=args.gsize, step_tot=args.step_tot)
+    cfg = ChenGong2019Config(
+        gsize=args.gsize,
+        grid_shape=None if args.grid_shape is None else tuple(args.grid_shape),
+        step_tot=args.step_tot,
+    )
     path = build_chen_gong_2019_input(
         args.output_h5,
         args.ext_current_e,
