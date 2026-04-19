@@ -286,10 +286,13 @@ def inspect_in_file(path: Path, event_e: Path, event_i: Path, report: Report) ->
             syn_summaries = []
             for idx in range(n_syns):
                 base = f"/config/syns/syn{idx}/INIT006"
-                missing = [leaf for leaf in ("I", "J", "K", "D") if f"{base}/{leaf}" not in h5f]
+                missing = [leaf for leaf in ("type", "i_pre", "j_post", "I", "J", "K", "D") if f"{base}/{leaf}" not in h5f]
                 if missing:
                     report.fail(f"syn{idx} datasets", f"missing {missing}")
                     continue
+                syn_type = int(h5f[f"{base}/type"][()])
+                pop_pre = int(h5f[f"{base}/i_pre"][()])
+                pop_post = int(h5f[f"{base}/j_post"][()])
                 i = np.asarray(h5f[f"{base}/I"][()])
                 j = np.asarray(h5f[f"{base}/J"][()])
                 k = np.asarray(h5f[f"{base}/K"][()])
@@ -298,9 +301,27 @@ def inspect_in_file(path: Path, event_e: Path, event_i: Path, report: Report) ->
                     report.pass_(f"syn{idx} I/J/K/D lengths", str(len(i)))
                 else:
                     report.fail(f"syn{idx} I/J/K/D lengths", f"{len(i)}, {len(j)}, {len(k)}, {len(d)}")
+                if "N" in summary and 0 <= pop_pre < len(summary["N"]) and 0 <= pop_post < len(summary["N"]):
+                    i_ok = i.size == 0 or (int(i.min()) >= 0 and int(i.max()) < int(summary["N"][pop_pre]))
+                    j_ok = j.size == 0 or (int(j.min()) >= 0 and int(j.max()) < int(summary["N"][pop_post]))
+                    if i_ok and j_ok:
+                        report.pass_(
+                            f"syn{idx} 0-based bounds",
+                            f"type={syn_type}, pop{pop_pre}->pop{pop_post}, "
+                            f"I in [0,{int(summary['N'][pop_pre]) - 1}], J in [0,{int(summary['N'][pop_post]) - 1}]",
+                        )
+                    else:
+                        report.fail(
+                            f"syn{idx} 0-based bounds",
+                            f"pop{pop_pre}->pop{pop_post}, I=[{i.min() if i.size else None},{i.max() if i.size else None}], "
+                            f"J=[{j.min() if j.size else None},{j.max() if j.size else None}]",
+                        )
                 syn_summaries.append(
                     {
                         "syn": idx,
+                        "type": syn_type,
+                        "pop_pre": pop_pre,
+                        "pop_post": pop_post,
                         "count": int(len(i)),
                         "k_min": None if k.size == 0 else float(k.min()),
                         "k_max": None if k.size == 0 else float(k.max()),
@@ -382,6 +403,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gsize", type=int, default=16, help="Fallback square grid size.")
     parser.add_argument("--grid-shape", nargs=2, type=int, metavar=("HEIGHT", "WIDTH"), help="Override rectangular grid shape.")
     parser.add_argument("--step-tot", type=int, default=25000)
+    parser.add_argument("--connection-backend", choices=("auto", "torch", "numpy"), default="auto")
+    parser.add_argument("--connection-device", default="auto", help="auto, cpu, cuda, cuda:0, ...")
     parser.add_argument("--preview-frames", type=int, default=8)
     parser.add_argument("--skip-build", action="store_true", help="Only inspect event files, do not build *_in.h5.")
     return parser.parse_args()
@@ -423,7 +446,13 @@ def main() -> int:
     in_summary = None
     in_path = output_dir / "debug_spikenet_in.h5"
     if not args.skip_build and event_summary_e is not None and event_summary_i is not None:
-        cfg = ChenGong2019Config(gsize=args.gsize, grid_shape=grid_shape, step_tot=args.step_tot)
+        cfg = ChenGong2019Config(
+            gsize=args.gsize,
+            grid_shape=grid_shape,
+            step_tot=args.step_tot,
+            connection_backend=args.connection_backend,
+            connection_device=args.connection_device,
+        )
         build_chen_gong_2019_input(in_path, event_e, event_i, config=cfg, loop_num=1, seed=1)
         report.pass_("preprocessing build", str(in_path))
         in_summary = inspect_in_file(in_path, event_e, event_i, report)

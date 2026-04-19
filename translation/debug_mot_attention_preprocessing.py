@@ -142,6 +142,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--square-debug", action="store_true", help="Also build a nearest-neighbor square-grid diagnostic input.")
     parser.add_argument("--max-build-neurons", type=int, default=5000, help="Skip full in.h5 connectivity build above this grid area.")
     parser.add_argument("--step-tot", type=int, default=25000)
+    parser.add_argument("--connection-backend", choices=("auto", "torch", "numpy"), default="auto")
+    parser.add_argument("--connection-device", default="auto", help="auto, cpu, cuda, cuda:0, ...")
     parser.add_argument("--output-dir", type=Path, default=Path("translation/debug_outputs/mot_attention"))
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
     return parser.parse_args()
@@ -160,8 +162,8 @@ def main() -> int:
     block_len = max(args.block_len, args.calibration_time + args.export_frames)
     spikes = stream.get_block_spikes(begin_idx=0, block_len=block_len)
     spikes = downscale_input(spikes, args.scale_w, args.scale_h)
-    spike_h = int(para_dict["spike_h"]) // args.scale_h
-    spike_w = int(para_dict["spike_w"]) // args.scale_w
+    spike_h = int(spikes.shape[1])
+    spike_w = int(spikes.shape[2])
     report.pass_("dataset loaded", f"{scene}: spikes shape={spikes.shape}, HxW={spike_h}x{spike_w}")
 
     device = torch.device(args.device if args.device == "cuda" and torch.cuda.is_available() else "cpu")
@@ -184,7 +186,7 @@ def main() -> int:
     save_event_preview(native_event, native_preview)
     report.pass_("native pre-attention preview", str(native_preview))
 
-    if native_summary is not None:
+    if native_summary is not None and native_summary["num_events"] > 0:
         x_ok_native = 0 <= native_summary["x_min"] and native_summary["x_max"] < spike_w
         y_ok_native = 0 <= native_summary["y_min"] and native_summary["y_max"] < spike_h
         if x_ok_native and y_ok_native:
@@ -196,11 +198,19 @@ def main() -> int:
                 f"y=[{native_summary['y_min']},{native_summary['y_max']}], frame={spike_h}x{spike_w}",
             )
         check_population_match(native_summary, (spike_h, spike_w), report)
+    elif native_summary is not None:
+        report.warn("native event/native frame match", "zero-event file cannot validate coordinate coverage")
+        check_population_match(native_summary, (spike_h, spike_w), report)
 
     in_summary = None
     if spike_h * spike_w <= args.max_build_neurons:
         in_path = args.output_dir / f"{scene}_{spike_h}x{spike_w}_debug_in.h5"
-        cfg = ChenGong2019Config(grid_shape=(spike_h, spike_w), step_tot=args.step_tot)
+        cfg = ChenGong2019Config(
+            grid_shape=(spike_h, spike_w),
+            step_tot=args.step_tot,
+            connection_backend=args.connection_backend,
+            connection_device=args.connection_device,
+        )
         build_chen_gong_2019_input(in_path, native_event, native_event, config=cfg, loop_num=1, seed=1)
         report.pass_("translation preprocessing build", str(in_path))
         in_summary = inspect_in_file(in_path, native_event, native_event, report)
@@ -227,7 +237,12 @@ def main() -> int:
             check_population_match(square_summary, (args.spikenet_size, args.spikenet_size), report)
 
         square_in_path = args.output_dir / f"{scene}_square{args.spikenet_size}_debug_in.h5"
-        square_cfg = ChenGong2019Config(gsize=args.spikenet_size, step_tot=args.step_tot)
+        square_cfg = ChenGong2019Config(
+            gsize=args.spikenet_size,
+            step_tot=args.step_tot,
+            connection_backend=args.connection_backend,
+            connection_device=args.connection_device,
+        )
         build_chen_gong_2019_input(square_in_path, square_event, square_event, config=square_cfg, loop_num=1, seed=1)
         report.pass_("square translation preprocessing build", str(square_in_path))
 
