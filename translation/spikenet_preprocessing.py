@@ -140,6 +140,14 @@ def write_elif_neuron_model(file_or_path, pop_ind: int, elif_vt: float, elif_del
         _write_dataset(h5f, f"/config/pops/pop{pop_ind}/ELIF/ELIF_delT", float(elif_delt))
 
 
+def write_spike_freq_adpt(file_or_path, pop_ind: int, dg_k: float = 0.01) -> None:
+    """Enable SpikeNet spike-frequency adaptation for one 0-based population."""
+    _require_nonnegative(np.asarray([pop_ind]), "pop_ind")
+    with _managed_h5(file_or_path) as h5f:
+        _write_dataset(h5f, f"/config/pops/pop{pop_ind}/INIT010/spike_freq_adpt", 1, dtype=np.int8)
+        _write_dataset(h5f, f"/config/pops/pop{pop_ind}/INIT010/dg_K", float(dg_k))
+
+
 def write_init_cond(file_or_path, r_v0: Sequence[float], p_fire: Sequence[float]) -> None:
     r_v0_arr = _as_1d_array(r_v0, dtype=float)
     p_fire_arr = _as_1d_array(p_fire, dtype=float)
@@ -465,6 +473,344 @@ def generate_chen_gong_connections(
         empty_f = np.asarray([], dtype=float)
         return empty_i, empty_i.copy(), empty_f, empty_f.copy()
     return tuple(np.concatenate(parts) for parts in (all_i, all_j, all_k, all_d))
+
+
+def rectangular_lattice_coordinates(shape: tuple[int, int]) -> np.ndarray:
+    """Return centered 0-based neuron coordinates in column-major id order."""
+    height, width = int(shape[0]), int(shape[1])
+    rows, cols = np.unravel_index(np.arange(height * width), (height, width), order="F")
+    coords = np.column_stack((rows, cols)).astype(np.float32)
+    coords[:, 0] -= (height - 1) / 2.0
+    coords[:, 1] -= (width - 1) / 2.0
+    return coords
+
+
+def quasi_lattice_coordinates(
+    n_points: int,
+    shape: tuple[int, int],
+    *,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Generate GU-style random inhibitory coordinates inside a rectangular lattice."""
+    rng = rng or np.random.default_rng()
+    height, width = int(shape[0]), int(shape[1])
+    coords = np.column_stack((rng.random(int(n_points)) * height, rng.random(int(n_points)) * width)).astype(np.float32)
+    order = np.lexsort((coords[:, 1], coords[:, 0]))
+    coords = coords[order]
+    coords[:, 0] -= height / 2.0
+    coords[:, 1] -= width / 2.0
+    return coords
+
+
+def _pairwise_periodic_dist_torch(torch, pre_coords, post_coords, shape, device):
+    height, width = float(shape[0]), float(shape[1])
+    drow = torch.abs(pre_coords[:, None, 0] - post_coords[None, :, 0])
+    dcol = torch.abs(pre_coords[:, None, 1] - post_coords[None, :, 1])
+    drow = torch.minimum(drow, torch.as_tensor(height, dtype=torch.float32, device=device) - drow)
+    dcol = torch.minimum(dcol, torch.as_tensor(width, dtype=torch.float32, device=device) - dcol)
+    return torch.sqrt(drow.square() + dcol.square())
+
+
+def generate_gu_lattice_connections(
+    pre_coords_np: np.ndarray,
+    post_coords_np: np.ndarray,
+    lattice_shape: tuple[int, int],
+    *,
+    p0: float,
+    tau_c: float,
+    rng: np.random.Generator | None = None,
+    post_chunk_size: int = 512,
+    device: str = "auto",
+    allow_self: bool = True,
+    max_probability: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generate GU-style distance-dependent lattice connections.
+
+    This is a vectorized Python/PyTorch adaptation of the GU lattice idea:
+    nearby post neurons get larger sampling probability, and each pre neuron
+    has expected out-degree ``p0 * N_post``. It intentionally keeps the HDF5
+    interface simple by returning pop-local 0-based ``I/J`` arrays.
+    """
+    torch, torch_device = _resolve_torch_device(device)
+    rng = rng or np.random.default_rng()
+    pre_coords = torch.as_tensor(pre_coords_np, dtype=torch.float32, device=torch_device)
+    post_coords_all = np.asarray(post_coords_np, dtype=np.float32)
+    n_pre = int(pre_coords_np.shape[0])
+    n_post = int(post_coords_np.shape[0])
+    if n_pre == 0 or n_post == 0 or p0 <= 0:
+        return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
+
+    factor_sum = torch.zeros(n_pre, dtype=torch.float32, device=torch_device)
+    for start in range(0, n_post, post_chunk_size):
+        stop = min(start + post_chunk_size, n_post)
+        post_coords = torch.as_tensor(post_coords_all[start:stop], dtype=torch.float32, device=torch_device)
+        dist = _pairwise_periodic_dist_torch(torch, pre_coords, post_coords, lattice_shape, torch_device)
+        factor = torch.exp(-dist / float(tau_c))
+        if not allow_self and n_pre == n_post:
+            diag = torch.arange(start, stop, dtype=torch.long, device=torch_device)
+            valid_diag = diag < n_pre
+            if bool(torch.any(valid_diag)):
+                factor[diag[valid_diag], diag[valid_diag] - start] = 0.0
+        factor_sum += factor.sum(dim=1)
+
+    factor_sum = torch.clamp(factor_sum, min=1e-12)
+    expected_out = float(p0) * float(n_post)
+
+    all_i: list[np.ndarray] = []
+    all_j: list[np.ndarray] = []
+    for start in range(0, n_post, post_chunk_size):
+        stop = min(start + post_chunk_size, n_post)
+        post_coords = torch.as_tensor(post_coords_all[start:stop], dtype=torch.float32, device=torch_device)
+        dist = _pairwise_periodic_dist_torch(torch, pre_coords, post_coords, lattice_shape, torch_device)
+        factor = torch.exp(-dist / float(tau_c))
+        if not allow_self and n_pre == n_post:
+            diag = torch.arange(start, stop, dtype=torch.long, device=torch_device)
+            valid_diag = diag < n_pre
+            if bool(torch.any(valid_diag)):
+                factor[diag[valid_diag], diag[valid_diag] - start] = 0.0
+        prob = torch.clamp(expected_out * factor / factor_sum[:, None], min=0.0, max=float(max_probability))
+        mask = torch.rand(prob.shape, dtype=torch.float32, device=torch_device) < prob
+        pre_idx, post_local = torch.nonzero(mask, as_tuple=True)
+        if pre_idx.numel():
+            all_i.append(pre_idx.detach().cpu().numpy().astype(np.int64, copy=False))
+            all_j.append((post_local + start).detach().cpu().numpy().astype(np.int64, copy=False))
+        del post_coords, dist, factor, prob, mask
+        if torch_device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    if not all_i:
+        return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
+
+    return np.concatenate(all_i), np.concatenate(all_j)
+
+
+def assign_gu_ee_weights(
+    j_post: np.ndarray,
+    n_post: int,
+    *,
+    weight_mean: float,
+    weight_std: float,
+    rng: np.random.Generator | None = None,
+    use_inverse_pool: bool = True,
+    random_seed: int | None = None,
+) -> np.ndarray:
+    """Assign GU-style E/E weights with inverse-pool fallback semantics."""
+    rng = rng or np.random.default_rng(random_seed)
+    j_arr = _as_1d_array(j_post, dtype=np.int64)
+    in_degree = np.bincount(j_arr, minlength=int(n_post)).astype(np.int64)
+    if j_arr.size == 0:
+        return np.asarray([], dtype=float)
+
+    if use_inverse_pool and np.any(in_degree > 0):
+        try:
+            k_cell = assign_inverse_pool_weights_from_repo_b(
+                in_degree,
+                k_scale=np.sqrt(in_degree),
+                weight_mean=weight_mean,
+                weight_std=weight_std,
+                random_seed=random_seed,
+            )
+            weights = np.zeros(j_arr.size, dtype=float)
+            for post in range(int(n_post)):
+                mask = j_arr == post
+                count = int(np.sum(mask))
+                if count == 0:
+                    continue
+                vals = np.asarray(k_cell[post], dtype=float).reshape(-1)
+                if vals.size != count:
+                    vals = np.resize(vals, count)
+                weights[mask] = vals
+            return weights
+        except Exception:
+            pass
+
+    var = float(weight_std) ** 2
+    mean_sq = float(weight_mean) ** 2
+    sigma = np.sqrt(np.log(var / mean_sq + 1.0)) if var > 0 else 0.0
+    mu = np.log(mean_sq / np.sqrt(var + mean_sq)) if var > 0 else np.log(float(weight_mean))
+    weights = rng.lognormal(mu, sigma, j_arr.size)
+    scale = np.sqrt(in_degree.astype(float))
+    total = float(np.sum(weights))
+    target = np.zeros_like(scale, dtype=float)
+    if np.sum(scale) > 0:
+        target = total * scale / np.sum(scale)
+    for post in range(int(n_post)):
+        mask = j_arr == post
+        subtotal = float(np.sum(weights[mask]))
+        if subtotal > 0 and target[post] > 0:
+            weights[mask] *= target[post] / subtotal
+    return weights
+
+
+@dataclass(frozen=True)
+class GU2018Config:
+    lattice_shape: tuple[int, int] = (63, 63)
+    n_i: int | None = 1000
+    dt: float = 0.1
+    step_tot: int = 100000
+    tau_ref: float = 4.0
+    delay_max: float = 4.0
+    dg_k: float = 0.01
+    p_mat: tuple[tuple[float, float], tuple[float, float]] = ((0.16, 0.2), (0.2, 0.4))
+    zeta: float = 27 / 8
+    g_ee_mu: float = 4e-3
+    g_ee_std: float = 1e-3
+    g_ie: float = 5e-3
+    g_ii: float = 25e-3
+    tau_c_ee: float = 8.0
+    tau_c_ie: float = 10.0
+    tau_c_i: float = 20.0
+    use_inverse_pool: bool = True
+    post_chunk_size: int = 512
+    connection_device: str = "auto"
+    max_connection_probability: float = 1.0
+
+    @property
+    def resolved_lattice_shape(self) -> tuple[int, int]:
+        if len(self.lattice_shape) != 2:
+            raise ValueError("lattice_shape must be (height, width)")
+        height, width = int(self.lattice_shape[0]), int(self.lattice_shape[1])
+        if height <= 0 or width <= 0:
+            raise ValueError("lattice dimensions must be positive")
+        return height, width
+
+    @property
+    def n_e(self) -> int:
+        height, width = self.resolved_lattice_shape
+        return int(height * width)
+
+    @property
+    def resolved_n_i(self) -> int:
+        if self.n_i is not None:
+            return int(self.n_i)
+        return max(1, int(round(self.n_e / 4)))
+
+
+def build_gu_2018_input(
+    output_path: str | Path,
+    ext_input_e: str | Path,
+    ext_input_i: str | Path | None = None,
+    *,
+    config: GU2018Config = GU2018Config(),
+    loop_num: int = 1,
+    seed: int | None = 1,
+) -> Path:
+    """Build a GU et al. 2018-style SpikeNet ``*_in.h5`` with configurable lattice size."""
+    output_path = Path(output_path)
+    path, rng = new_ygin_file(loop_num, output_dir=output_path.parent, filename=output_path.name, seed=seed)
+
+    lattice_shape = config.resolved_lattice_shape
+    n_e = config.n_e
+    n_i = config.resolved_n_i
+    n = np.asarray([n_e, n_i], dtype=np.int64)
+
+    coords_e = rectangular_lattice_coordinates(lattice_shape)
+    coords_i = quasi_lattice_coordinates(n_i, lattice_shape, rng=rng)
+    p_mat = np.asarray(config.p_mat, dtype=float)
+
+    write_basic_para(path, config.dt, config.step_tot, n)
+    for pop in range(2):
+        write_pop_para(path, pop, tau_ref=config.tau_ref)
+    write_spike_freq_adpt(path, 0, config.dg_k)
+    write_ext_current_pop(path, ext_input_e, 0)
+    write_ext_current_pop(path, ext_input_i if ext_input_i is not None else ext_input_e, 1)
+
+    i_ee, j_ee = generate_gu_lattice_connections(
+        coords_e,
+        coords_e,
+        lattice_shape,
+        p0=p_mat[0, 0],
+        tau_c=config.tau_c_ee,
+        rng=rng,
+        post_chunk_size=config.post_chunk_size,
+        device=config.connection_device,
+        allow_self=False,
+        max_probability=config.max_connection_probability,
+    )
+    k_ee = assign_gu_ee_weights(
+        j_ee,
+        n_e,
+        weight_mean=config.g_ee_mu,
+        weight_std=config.g_ee_std,
+        rng=rng,
+        use_inverse_pool=config.use_inverse_pool,
+        random_seed=seed,
+    )
+    d_ee = rng.random(i_ee.size) * config.delay_max
+    write_chemical_connection(path, 0, 0, 0, i_ee, j_ee, k_ee, d_ee)
+
+    in_weight_ee = np.bincount(j_ee, weights=k_ee, minlength=n_e)
+
+    i_ie, j_ie = generate_gu_lattice_connections(
+        coords_i,
+        coords_e,
+        lattice_shape,
+        p0=p_mat[1, 0],
+        tau_c=config.tau_c_i,
+        rng=rng,
+        post_chunk_size=config.post_chunk_size,
+        device=config.connection_device,
+        allow_self=True,
+        max_probability=config.max_connection_probability,
+    )
+    count_ie = np.bincount(j_ie, minlength=n_e)
+    mu_ie = np.zeros(n_e, dtype=float)
+    valid_ie = count_ie > 0
+    mu_ie[valid_ie] = (in_weight_ee[valid_ie] / count_ie[valid_ie]) * config.zeta
+    k_ie = np.abs(rng.normal(mu_ie[j_ie], np.maximum(mu_ie[j_ie] * 0.25, 1e-12))) if j_ie.size else np.asarray([], dtype=float)
+    d_ie = rng.random(i_ie.size) * config.delay_max
+    write_chemical_connection(path, 1, 1, 0, i_ie, j_ie, k_ie, d_ie)
+
+    i_ei, j_ei = generate_gu_lattice_connections(
+        coords_e,
+        coords_i,
+        lattice_shape,
+        p0=p_mat[0, 1],
+        tau_c=config.tau_c_ie,
+        rng=rng,
+        post_chunk_size=config.post_chunk_size,
+        device=config.connection_device,
+        allow_self=True,
+        max_probability=config.max_connection_probability,
+    )
+    k_ei = np.full(i_ei.size, config.g_ie, dtype=float)
+    d_ei = rng.random(i_ei.size) * config.delay_max
+    write_chemical_connection(path, 0, 0, 1, i_ei, j_ei, k_ei, d_ei)
+
+    i_ii, j_ii = generate_gu_lattice_connections(
+        coords_i,
+        coords_i,
+        lattice_shape,
+        p0=p_mat[1, 1],
+        tau_c=config.tau_c_i,
+        rng=rng,
+        post_chunk_size=config.post_chunk_size,
+        device=config.connection_device,
+        allow_self=False,
+        max_probability=config.max_connection_probability,
+    )
+    k_ii = np.full(i_ii.size, config.g_ii, dtype=float)
+    d_ii = rng.random(i_ii.size) * config.delay_max
+    write_chemical_connection(path, 1, 1, 1, i_ii, j_ii, k_ii, d_ii)
+
+    write_syn_para(path, tau_decay_GABA=3)
+    write_init_cond(path, [0.1, 0.0], [0.0, 0.0])
+
+    sample_steps = np.ones(config.step_tot, dtype=np.int8)
+    sample_i = np.arange(min(2, n_i), dtype=np.int64)
+    write_neuron_sampling(path, 1, [1, 1, 1, 1, 0, 0, 1, 0], sample_i, sample_steps)
+    sample_e = rng.choice(n_e, size=min(20, n_e), replace=False).astype(np.int64)
+    write_neuron_sampling(path, 0, [1, 1, 1, 1, 0, 0, 1, 1], sample_e, sample_steps)
+
+    write_expl_var(
+        path,
+        discard_transient=0,
+        loop_num=loop_num,
+        gu_lattice_shape=f"{lattice_shape[0]}x{lattice_shape[1]}",
+        gu_n_i=n_i,
+    )
+    append_config_text(path, "Python GU-style translation of SpikeNet/models/main_GU_et_al_2018.m")
+    return path
 
 
 @dataclass(frozen=True)

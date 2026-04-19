@@ -240,6 +240,159 @@ network_generator.sampling.weight_assign.inversepool.InversePoolWeightAssign
 
 Chen/Gong 距离连接路径默认不需要 inverse pool。
 
+### GU-Style Preprocessing
+
+当前也提供 GU et al. 2018 风格的 preprocessing builder：
+
+```python
+GU2018Config
+build_gu_2018_input(...)
+```
+
+代码位置：
+
+```text
+translation/spikenet_preprocessing.py
+translation/debug_gu_preprocessing_flow.py
+```
+
+GU-style builder 使用和 Chen/Gong builder 相同的 simulator HDF5 schema：
+
+```text
+/config/Net/INIT001/N
+/config/Net/INIT002/dt
+/config/Net/INIT002/step_tot
+/config/pops/pop*/file_current_input/fname
+/config/syns/syn*/INIT006/type
+/config/syns/syn*/INIT006/i_pre
+/config/syns/syn*/INIT006/j_post
+/config/syns/syn*/INIT006/I
+/config/syns/syn*/INIT006/J
+/config/syns/syn*/INIT006/K
+/config/syns/syn*/INIT006/D
+```
+
+区别只在网络生成方式：
+
+```text
+Chen/Gong:
+    E/I population 覆盖输入 grid
+    连接由距离阈值生成
+    E 权重按距离衰减
+
+GU-style:
+    pop0 是可调 HxW lattice，默认 63x63
+    pop1 是 quasi-lattice inhibitory population
+    连接按 GU 风格的距离依赖概率生成
+    E/E 权重使用 inverse-pool 风格分配
+    I/E 权重根据每个 E neuron 的 E/E 入权重做平衡
+```
+
+默认 GU 原论文规模可以这样表示：
+
+```python
+GU2018Config(
+    lattice_shape=(63, 63),
+    n_i=1000,
+)
+```
+
+老师说的 `63x63` 可以改成参数，现在对应的是：
+
+```python
+GU2018Config(lattice_shape=(height, width))
+```
+
+例如为了保持 MOT 原图比例，可以用：
+
+```python
+GU2018Config(lattice_shape=(50, 80), n_i=1000)
+```
+
+调试 synthetic GU-style preprocessing：
+
+```bash
+conda run -n snntracker_py311 python translation/debug_gu_preprocessing_flow.py \
+  --make-synthetic \
+  --lattice-shape 12 16 \
+  --n-i 48 \
+  --step-tot 200 \
+  --p-scale 0.2 \
+  --connection-device cuda \
+  --output-dir /tmp/snntracker_gu_12x16_debug
+```
+
+调试默认 GU 空间大小 `63x63` 的轻量连接版本：
+
+```bash
+conda run -n snntracker_py311 python translation/debug_gu_preprocessing_flow.py \
+  --make-synthetic \
+  --lattice-shape 63 63 \
+  --n-i 1000 \
+  --step-tot 200 \
+  --p-scale 0.02 \
+  --connection-device cuda \
+  --output-dir /tmp/snntracker_gu_63x63_debug
+```
+
+`--p-scale` 只用于调试时缩小连接数量。真实 GU 默认连接概率对应：
+
+```text
+P_mat = [[0.16, 0.2],
+         [0.2,  0.4]]
+```
+
+即 `--p-scale 1.0`。这会产生数百万级连接，调试时不建议直接开满。
+
+把真实 MOT pre-attention 输入接到 GU-style preprocessing 的调试流程：
+
+```bash
+conda run -n snntracker_py311 python translation/debug_mot_attention_preprocessing.py \
+  --data-path /home/hanruoshui/snnTracker/motVidarReal2025 \
+  --scene spike59 \
+  --block-len 210 \
+  --calibration-time 150 \
+  --export-frames 20 \
+  --attention-size 15 \
+  --scale-w 1 \
+  --scale-h 1 \
+  --step-tot 200 \
+  --output-dir /tmp/snntracker_mot_square63_for_gu \
+  --device cpu \
+  --square-debug \
+  --spikenet-size 63 \
+  --connection-backend torch \
+  --connection-device cuda
+```
+
+然后把生成的 `63x63` event 文件接到 GU builder：
+
+```bash
+conda run -n snntracker_py311 python translation/debug_gu_preprocessing_flow.py \
+  --event-e /tmp/snntracker_mot_square63_for_gu/spike59_pre_attention_square63.h5 \
+  --lattice-shape 63 63 \
+  --n-i 1000 \
+  --step-tot 200 \
+  --p-scale 0.02 \
+  --connection-device cuda \
+  --output-dir /tmp/snntracker_gu_63x63_mot_debug
+```
+
+已经验证通过的关键检查：
+
+```text
+event frames_shape = 63x63
+x within [0,62], y within [0,62]
+N = [3969, 1000]
+n_syns = 4
+syn0: pop0->pop0, type=0, I/J 0-based bounds pass
+syn1: pop1->pop0, type=1, I/J 0-based bounds pass
+syn2: pop0->pop1, type=0, I/J 0-based bounds pass
+syn3: pop1->pop1, type=1, I/J 0-based bounds pass
+```
+
+注意：GU-style builder 目前是工程化 Python 版本，保留 GU 的核心结构和权重思想，但没有逐行复刻 Matlab `generate_IJ_2D(...)` 的 common-neighbor 多轮迭代。后续如果需要严格复现实验，可以继续补齐 common-neighbor 迭代逻辑。
+
 ## Post-Processing
 
 ### 目标
