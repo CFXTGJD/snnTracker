@@ -5,7 +5,7 @@
 ```text
 1. 外部输入文件
 2. preprocessing 生成的 *_in.h5 配置文件
-3. C++ / Python simulator 读取配置并运行
+3. simulator 或 btorch adapter 读取配置并运行
 ```
 
 重点回答：
@@ -72,7 +72,7 @@ SpikeNet input config: *_in.h5
     |
     |  C. simulator import_HDF5
     v
-C++ / Python simulator
+btorch adapter / simulator
     |
     |  D. 读取 *_in.h5 中的网络结构
     |  E. 按 *_in.h5 中的 fname 打开外部输入文件
@@ -466,38 +466,6 @@ event 文件也要补 max_x/max_y
 这会改变 event/spike 输入语义
 ```
 
-### 做法 C：Python simulator 自定义 file_current_input 语义
-
-如果用的是翻译后的 Python simulator，而不是 C++ 原版，可以约定：
-
-```text
-/config/pops/pop0/file_current_input/fname
-```
-
-虽然名字叫 `file_current_input`，但 Python reader 把它当 event-style HDF5 读：
-
-```text
-/x
-/y
-/t
-/pol
-attrs/frames_shape
-```
-
-优点：
-
-```text
-当前 preprocessing 改动最小
-最容易和现有 debug_preprocessing_flow.py 接上
-```
-
-缺点：
-
-```text
-名字和 C++ 原版语义不一致
-需要在 Python simulator 接口文档里写清楚
-```
-
 ## 输入映射发生在哪里？
 
 输入映射不是 GU 风格本身的一部分，也不是 `writeExtCurrentPopHDF5` 本身的一部分。
@@ -612,7 +580,7 @@ pop0 neuron id -> (y, x)
 
 为了让概念最清楚，我建议按下面的接口定义走。
 
-### 如果接 Python simulator
+### 如果接 btorch
 
 第一版推荐：
 
@@ -626,17 +594,21 @@ event_h5:
     /x, /y, /t, /pol
     attrs/frames_shape
 
-python simulator:
-    明确把 file_current_input/fname 当 event HDF5 读
-    用 grid_shape 把 x/y 映射到 pop0 neuron
-    输出 /activity: [T,H,W]
+btorch_interface:
+    读取 *_in.h5 的 N/dt/step_tot 和 syn I/J/K/D
+    把连接转成 scipy COO, shape=(N_total,N_total)
+    把 event HDF5 rasterize 成 [T,batch,N_total] external current
+
+btorch runner:
+    运行模型，输出 [T,N_total] 或 [T,batch,N_total] spikes/activity
+    通过 write_btorch_output_h5 写 /activity: [T,H,W]
 
 postprocessing:
     直接读 /activity
     bbox readout
 ```
 
-这条链路的优点是最少改当前代码，最快打通 object detection。
+这条链路是当前 `translation/` 唯一保留的 adapter 路线。
 
 ### 如果接 C++ 原版 simulator
 
@@ -697,9 +669,9 @@ file_current_input/fname 只是指向输入文件
 GU-style generated connections 只是网络拓扑
 ```
 
-### Simulator
+### btorch adapter / runner
 
-Python simulator 读：
+btorch adapter 读：
 
 ```text
 /tmp/gu_50x80_in.h5
@@ -712,8 +684,9 @@ Python simulator 读：
 读 syn I/J/K/D
 读 pop0 的 fname
 打开 /tmp/spike59_50x80_events.h5
-把 event x/y 映射到 pop0 neuron
-运行
+把 event x/y 映射到 pop0 neuron，形成 [T,B,N_total]
+把连接转成 scipy COO
+btorch runner 运行
 写 /tmp/gu_50x80_out.h5
 ```
 
@@ -756,4 +729,3 @@ writeExtCurrentPopHDF5:
     决定 simulator 的 neuron activity 怎么变回图像 activity。
     发生在 postprocessing 里。
 ```
-

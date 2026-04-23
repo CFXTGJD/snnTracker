@@ -17,6 +17,8 @@ from typing import Sequence
 
 import h5py
 import numpy as np
+from scipy import stats
+from scipy import sparse
 
 
 SPIKENET_ROOT = Path(__file__).resolve().parents[2] / "SpikeNet"
@@ -267,27 +269,6 @@ class _managed_h5:
         return False
 
 
-def population_coordinates(grid: np.ndarray, pop_ind: int) -> np.ndarray:
-    """Return 0-based ``[row, col]`` coordinates in column-major neuron order."""
-    _require_nonnegative(np.asarray([pop_ind]), "pop_ind")
-    flat = np.flatnonzero(np.asarray(grid).ravel(order="F") == int(pop_ind))
-    rows, cols = np.unravel_index(flat, grid.shape, order="F")
-    return np.column_stack((rows, cols)).astype(np.float64)
-
-
-def periodic_distance_matrix(
-    pre_coords: np.ndarray,
-    post_coords: np.ndarray,
-    grid_shape: tuple[int, int],
-) -> np.ndarray:
-    grid_h, grid_w = grid_shape
-    dx = np.abs(pre_coords[:, None, 0] - post_coords[None, :, 0])
-    dy = np.abs(pre_coords[:, None, 1] - post_coords[None, :, 1])
-    dx = np.minimum(dx, grid_h - dx)
-    dy = np.minimum(dy, grid_w - dy)
-    return np.sqrt(dx * dx + dy * dy)
-
-
 def _resolve_torch_device(device: str):
     try:
         import torch
@@ -299,180 +280,6 @@ def _resolve_torch_device(device: str):
     else:
         resolved = device
     return torch, torch.device(resolved)
-
-
-def generate_chen_gong_connections_torch(
-    grid: np.ndarray,
-    pop_pre: int,
-    pop_post: int,
-    weight: float,
-    drange: float,
-    sigma: float,
-    *,
-    inhibitory_pre: bool,
-    pbc: bool = True,
-    delay_max: float = 0.0,
-    rng: np.random.Generator | None = None,
-    post_chunk_size: int = 512,
-    device: str = "auto",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Generate one population-pair connectivity block with PyTorch.
-
-    The returned ``I`` and ``J`` arrays are pop-local, 0-based neuron indices.
-    Distance computation and thresholding run on ``device``; final arrays are
-    returned on CPU because HDF5 writing is CPU-bound.
-    """
-    torch, torch_device = _resolve_torch_device(device)
-    rng = rng or np.random.default_rng()
-    pre_coords_np = population_coordinates(grid, pop_pre).astype(np.float32, copy=False)
-    post_coords_np = population_coordinates(grid, pop_post).astype(np.float32, copy=False)
-    grid_h, grid_w = int(grid.shape[0]), int(grid.shape[1])
-
-    pre_coords = torch.as_tensor(pre_coords_np, dtype=torch.float32, device=torch_device)
-    drange2 = float(drange) * float(drange)
-    sigma_f = float(sigma)
-
-    all_i: list[np.ndarray] = []
-    all_j: list[np.ndarray] = []
-    all_k: list[np.ndarray] = []
-    all_d: list[np.ndarray] = []
-
-    for start in range(0, len(post_coords_np), post_chunk_size):
-        stop = min(start + post_chunk_size, len(post_coords_np))
-        chunk = torch.as_tensor(post_coords_np[start:stop], dtype=torch.float32, device=torch_device)
-        drow = torch.abs(pre_coords[:, None, 0] - chunk[None, :, 0])
-        dcol = torch.abs(pre_coords[:, None, 1] - chunk[None, :, 1])
-        if pbc:
-            drow = torch.minimum(drow, torch.as_tensor(float(grid_h), device=torch_device) - drow)
-            dcol = torch.minimum(dcol, torch.as_tensor(float(grid_w), device=torch_device) - dcol)
-        dist2 = drow.square() + dcol.square()
-        pre_idx, post_local = torch.nonzero(dist2 <= drange2, as_tuple=True)
-        if pre_idx.numel() == 0:
-            continue
-
-        post_idx = post_local + start
-        if pop_pre == pop_post:
-            keep = pre_idx != post_idx
-            if not bool(torch.any(keep)):
-                continue
-            pre_idx = pre_idx[keep]
-            post_idx = post_idx[keep]
-            post_local = post_local[keep]
-
-        dist2_vals = dist2[pre_idx, post_local]
-        if inhibitory_pre:
-            weights = torch.full((pre_idx.numel(),), float(weight), dtype=torch.float32, device=torch_device)
-        else:
-            weights = float(weight) * torch.exp(-dist2_vals / sigma_f)
-        delays = rng.random(int(pre_idx.numel())) * delay_max if delay_max else np.zeros(int(pre_idx.numel()), dtype=float)
-
-        all_i.append(pre_idx.detach().cpu().numpy().astype(np.int64, copy=False))
-        all_j.append(post_idx.detach().cpu().numpy().astype(np.int64, copy=False))
-        all_k.append(weights.detach().cpu().numpy().astype(float, copy=False))
-        all_d.append(np.asarray(delays, dtype=float))
-
-        del chunk, drow, dcol, dist2, pre_idx, post_local, post_idx, weights
-        if torch_device.type == "cuda":
-            torch.cuda.empty_cache()
-
-    if not all_i:
-        empty_i = np.asarray([], dtype=np.int64)
-        empty_f = np.asarray([], dtype=float)
-        return empty_i, empty_i.copy(), empty_f, empty_f.copy()
-    return tuple(np.concatenate(parts) for parts in (all_i, all_j, all_k, all_d))
-
-
-def generate_chen_gong_connections(
-    grid: np.ndarray,
-    pop_pre: int,
-    pop_post: int,
-    weight: float,
-    drange: float,
-    sigma: float,
-    *,
-    inhibitory_pre: bool,
-    pbc: bool = True,
-    delay_max: float = 0.0,
-    rng: np.random.Generator | None = None,
-    post_chunk_size: int = 512,
-    backend: str = "auto",
-    device: str = "auto",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Generate one Chen/Gong 2019 population-pair connectivity block.
-
-    ``backend="auto"`` uses PyTorch when available and falls back to NumPy.
-    All returned indices are 0-based and ready to write to C++ HDF5 config.
-    """
-    if backend not in {"auto", "torch", "numpy"}:
-        raise ValueError("backend must be one of: auto, torch, numpy")
-    if backend in {"auto", "torch"}:
-        try:
-            return generate_chen_gong_connections_torch(
-                grid,
-                pop_pre,
-                pop_post,
-                weight,
-                drange,
-                sigma,
-                inhibitory_pre=inhibitory_pre,
-                pbc=pbc,
-                delay_max=delay_max,
-                rng=rng,
-                post_chunk_size=post_chunk_size,
-                device=device,
-            )
-        except RuntimeError:
-            if backend == "torch":
-                raise
-
-    rng = rng or np.random.default_rng()
-    pre_coords = population_coordinates(grid, pop_pre)
-    post_coords = population_coordinates(grid, pop_post)
-    grid_shape = (int(grid.shape[0]), int(grid.shape[1]))
-
-    all_i: list[np.ndarray] = []
-    all_j: list[np.ndarray] = []
-    all_k: list[np.ndarray] = []
-    all_d: list[np.ndarray] = []
-    for start in range(0, len(post_coords), post_chunk_size):
-        stop = min(start + post_chunk_size, len(post_coords))
-        chunk = post_coords[start:stop]
-        if pbc:
-            dist = periodic_distance_matrix(pre_coords, chunk, grid_shape)
-        else:
-            delta = pre_coords[:, None, :] - chunk[None, :, :]
-            dist = np.sqrt(np.sum(delta * delta, axis=2))
-
-        mask = dist <= drange
-        if pop_pre == pop_post:
-            pre_idx, post_local = np.nonzero(mask)
-            post_idx = post_local + start
-            keep = pre_idx != post_idx
-            pre_idx = pre_idx[keep]
-            post_idx = post_idx[keep]
-            dist_vals = dist[pre_idx, post_local[keep]]
-        else:
-            pre_idx, post_local = np.nonzero(mask)
-            post_idx = post_local + start
-            dist_vals = dist[pre_idx, post_local]
-
-        if pre_idx.size == 0:
-            continue
-        if inhibitory_pre:
-            weights = np.full(pre_idx.size, weight, dtype=float)
-        else:
-            weights = weight * np.exp(-(dist_vals * dist_vals) / sigma)
-        delays = rng.random(pre_idx.size) * delay_max if delay_max else np.zeros(pre_idx.size)
-        all_i.append(pre_idx.astype(np.int64))
-        all_j.append(post_idx.astype(np.int64))
-        all_k.append(weights.astype(float))
-        all_d.append(delays.astype(float))
-
-    if not all_i:
-        empty_i = np.asarray([], dtype=np.int64)
-        empty_f = np.asarray([], dtype=float)
-        return empty_i, empty_i.copy(), empty_f, empty_f.copy()
-    return tuple(np.concatenate(parts) for parts in (all_i, all_j, all_k, all_d))
 
 
 def rectangular_lattice_coordinates(shape: tuple[int, int]) -> np.ndarray:
@@ -642,6 +449,269 @@ def assign_gu_ee_weights(
     return weights
 
 
+def correlated_lognormal_degree(
+    n: int,
+    deg_mean: float,
+    deg_std: float,
+    corr: float,
+    *,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Translate ``my_logn_rand(..., 'mu_sigma_log')`` for a two-column degree pair."""
+    mu = np.asarray([deg_mean, deg_mean], dtype=float)
+    sigma = np.asarray([deg_std, deg_std], dtype=float)
+    mu_norm = np.log((mu * mu) / np.sqrt(sigma * sigma + mu * mu))
+    sigma_norm = np.sqrt(np.log((sigma * sigma) / (mu * mu) + 1.0))
+    sigma_down = np.tile(sigma_norm.reshape(1, -1), (2, 1))
+    sigma_across = np.tile(sigma_norm.reshape(-1, 1), (1, 2))
+    corr_mat = np.asarray([[1.0, corr], [corr, 1.0]], dtype=float)
+    cov = np.log(corr_mat * np.sqrt(np.exp(sigma_down**2) - 1.0) * np.sqrt(np.exp(sigma_across**2) - 1.0) + 1.0)
+    return np.exp(rng.multivariate_normal(mu_norm, cov, int(n)))
+
+
+def correlated_poisson_degree(
+    n: int,
+    deg_mean: float,
+    corr: float,
+    *,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Translate the Gaussian-copula part of ``poissrnd_2D``."""
+    cov = np.asarray([[1.0, corr], [corr, 1.0]], dtype=float)
+    normal = rng.multivariate_normal(np.zeros(2), cov, int(n))
+    p = stats.norm.cdf(normal)
+    return stats.poisson.ppf(p, deg_mean)
+
+
+def hybrid_degree_strict(
+    n: int,
+    deg_mean: float,
+    deg_std: float,
+    corr: float,
+    hybrid: float,
+    *,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Translate GU ``hybrid_degree`` into Python with 0-based arrays."""
+    mismatch_tol = float(deg_mean) / 2.0
+    mismatch = mismatch_tol + 1.0
+    degree_pair = None
+    while abs(mismatch) > mismatch_tol:
+        deg_logn = np.ceil(correlated_lognormal_degree(n, deg_mean, deg_std, corr, rng=rng))
+        deg_pois = correlated_poisson_degree(n, deg_mean, corr, rng=rng)
+        degree_pair = np.asarray(deg_pois, dtype=float)
+        n_logn = int(round(int(n) * float(hybrid)))
+        if n_logn > 0:
+            logn_ind = rng.permutation(int(n))[:n_logn]
+            degree_pair[logn_ind, :] = deg_logn[logn_ind, :]
+        degree_pair = np.nan_to_num(degree_pair, nan=0.0, posinf=0.0, neginf=0.0)
+        degree_pair = np.maximum(np.ceil(degree_pair), 0)
+        degree_pair = np.minimum(degree_pair, max(int(n) - 1, 0))
+        mismatch = int(np.sum(degree_pair[:, 0]) - np.sum(degree_pair[:, 1]))
+
+    assert degree_pair is not None
+    mismatch_i = int(mismatch)
+    if mismatch_i != 0:
+        adjust_ind = rng.permutation(int(n))[: abs(mismatch_i)]
+        if mismatch_i > 0:
+            degree_pair[adjust_ind, 1] += 1
+        else:
+            degree_pair[adjust_ind, 0] += 1
+    return degree_pair[:, 0].astype(np.int64), degree_pair[:, 1].astype(np.int64)
+
+
+def _normalize_nonnegative(values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    arr[arr < 0] = 0.0
+    norm = np.linalg.norm(arr)
+    if norm <= 0:
+        return arr
+    return arr / norm
+
+
+def compute_common_neighbor_torch(
+    i_pre: np.ndarray,
+    j_post: np.ndarray,
+    n: int,
+    *,
+    device: str = "auto",
+) -> np.ndarray:
+    """Compute ``cn = A.T @ A`` for GU E/E iteration using torch when possible."""
+    torch, torch_device = _resolve_torch_device(device)
+    dense = torch.zeros((int(n), int(n)), dtype=torch.float32, device=torch_device)
+    if len(i_pre):
+        dense[
+            torch.as_tensor(i_pre, dtype=torch.long, device=torch_device),
+            torch.as_tensor(j_post, dtype=torch.long, device=torch_device),
+        ] = 1.0
+    cn = dense.transpose(0, 1).matmul(dense)
+    cn.fill_diagonal_(0.0)
+    result = cn.detach().cpu().numpy()
+    del dense, cn
+    if torch_device.type == "cuda":
+        torch.cuda.empty_cache()
+    return result
+
+
+def generate_ij_2d_strict(
+    degree_in_0: np.ndarray,
+    degree_out_0: np.ndarray,
+    tau_d: float,
+    cn_scale_wire: float,
+    iter_num: int,
+    *,
+    lattice_shape: tuple[int, int],
+    rng: np.random.Generator,
+    device: str = "auto",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Strict Python translation of GU ``generate_IJ_2D`` core logic.
+
+    The implementation keeps the Matlab control flow: each iteration rebuilds
+    ``I/J`` from scratch, then computes ``cn=A.T@A`` for the next iteration.
+    Indices returned are 0-based.
+    """
+    n = int(len(degree_in_0))
+    coords = rectangular_lattice_coordinates(lattice_shape)
+    if coords.shape[0] != n:
+        raise ValueError(f"lattice_shape has {coords.shape[0]} nodes but degree arrays have {n}")
+    torch, torch_device = _resolve_torch_device(device)
+    coords_t = torch.as_tensor(coords, dtype=torch.float32, device=torch_device)
+    dist_full = _pairwise_periodic_dist_torch(torch, coords_t, coords_t, lattice_shape, torch_device).detach().cpu().numpy()
+
+    cn = None
+    cn_min = 0.0
+    cn_span = 1.0
+    out_degree = np.minimum(_as_1d_array(degree_out_0, dtype=np.int64), n - 1)
+    in_degree_base = np.minimum(_as_1d_array(degree_in_0, dtype=np.float64), n - 1)
+
+    final_i = np.asarray([], dtype=np.int64)
+    final_j = np.asarray([], dtype=np.int64)
+    final_dist = np.asarray([], dtype=float)
+    for _ in range(int(iter_num)):
+        all_i: list[np.ndarray] = []
+        all_j: list[np.ndarray] = []
+        all_dist: list[np.ndarray] = []
+        degree_in_left = in_degree_base.copy()
+        order = rng.permutation(n)
+        for pre in order:
+            need = int(out_degree[pre])
+            if need <= 0:
+                continue
+            dist_factor = np.exp(-dist_full[:, pre] / float(tau_d))
+            dist_factor[pre] = 0.0
+            if cn is None:
+                cn_factor = np.ones(n, dtype=float)
+            else:
+                cn_factor = 1.0 + (cn[:, pre] - cn_min) / cn_span * (float(cn_scale_wire) - 1.0)
+                cn_factor = np.nan_to_num(cn_factor, nan=1.0, posinf=1.0, neginf=1.0)
+            degree_factor = degree_in_left.copy()
+            low = degree_factor <= 4
+            degree_factor[low] = np.power(np.maximum(degree_factor[low], 0.0), 6) / (4.0**6)
+            joint = _normalize_nonnegative(dist_factor * degree_factor * cn_factor)
+            valid = np.isfinite(joint) & (joint > 0)
+            if not np.any(valid):
+                continue
+            scores = np.full(n, np.inf, dtype=float)
+            scores[valid] = rng.random(int(np.sum(valid))) / joint[valid]
+            chosen = np.argsort(scores)[: min(need, int(np.sum(valid)))]
+            chosen = chosen[np.isfinite(scores[chosen])]
+            if chosen.size == 0:
+                continue
+            degree_in_left[chosen] -= 1
+            degree_in_left[degree_in_left == 0] = np.nan
+            all_i.append(np.full(chosen.size, pre, dtype=np.int64))
+            all_j.append(chosen.astype(np.int64))
+            all_dist.append(dist_full[chosen, pre].astype(float))
+
+        if all_i:
+            final_i = np.concatenate(all_i)
+            final_j = np.concatenate(all_j)
+            final_dist = np.concatenate(all_dist)
+        else:
+            final_i = np.asarray([], dtype=np.int64)
+            final_j = np.asarray([], dtype=np.int64)
+            final_dist = np.asarray([], dtype=float)
+
+        cn = compute_common_neighbor_torch(final_i, final_j, n, device=device)
+        upper = cn[np.triu_indices(n, 1)]
+        cn_min = float(np.min(upper)) if upper.size else 0.0
+        cn_max = float(np.max(upper)) if upper.size else cn_min
+        cn_span = max(cn_max - cn_min, 1.0)
+
+    return final_i, final_j, final_dist
+
+
+def lattice_to_lattice_strict(
+    pre_coords: np.ndarray,
+    post_coords: np.ndarray,
+    lattice_shape: tuple[int, int],
+    tau_c: float,
+    p0: float,
+    *,
+    rng: np.random.Generator,
+    device: str = "auto",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Translate GU ``Lattice2Lattice`` sampling with 0-based indices."""
+    torch, torch_device = _resolve_torch_device(device)
+    pre_t = torch.as_tensor(np.asarray(pre_coords, dtype=np.float32), dtype=torch.float32, device=torch_device)
+    post_t = torch.as_tensor(np.asarray(post_coords, dtype=np.float32), dtype=torch.float32, device=torch_device)
+    dist = _pairwise_periodic_dist_torch(torch, pre_t, post_t, lattice_shape, torch_device).detach().cpu().numpy()
+    n_pre, n_post = dist.shape
+    all_i: list[np.ndarray] = []
+    all_j: list[np.ndarray] = []
+    for pre in range(n_pre):
+        count = int(rng.poisson(float(n_post) * float(p0)))
+        count = min(count, n_post)
+        if count <= 0:
+            continue
+        dist_factor = np.exp(-dist[pre] / float(tau_c))
+        valid = dist_factor > 0
+        scores = np.full(n_post, np.inf, dtype=float)
+        scores[valid] = rng.random(int(np.sum(valid))) / dist_factor[valid]
+        chosen = np.argsort(scores)[:count]
+        all_i.append(np.full(chosen.size, pre, dtype=np.int64))
+        all_j.append(chosen.astype(np.int64))
+    if not all_i:
+        return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
+    return np.concatenate(all_i), np.concatenate(all_j)
+
+
+def g_to_epsp_linear(g: float) -> float:
+    """Approximate SpikeNet ``g_EPSP_conversion`` fit on the default 0.001..0.010 range."""
+    g_values = np.linspace(0.001, 0.010, 10)
+    epsp = []
+    dt = 0.1
+    cm = 0.25
+    v_lk = -70.0
+    g_lk = 0.0167
+    v_rev = 0.0
+    tau_r = 1.0
+    tau_d = 5.0
+    v_th = -50.0
+    for gv in g_values:
+        v_old = v_lk
+        peaked = False
+        tau_r_step_left = round(tau_r / dt)
+        s = 0.0
+        while (not peaked) and v_old < v_th:
+            if tau_r_step_left > 0:
+                s = s + 1.0 / round(tau_r / dt) * (1.0 - s)
+                tau_r_step_left -= 1
+            current = -gv * s * (v_old - v_rev)
+            i_lk = -g_lk * (v_old - v_lk)
+            v_new = v_old + ((current + i_lk) / cm) * dt
+            peaked = v_new < v_old
+            v_old = v_new
+            s = s * np.exp(-dt / tau_d)
+            if v_old >= v_th:
+                v_old = np.nan
+                break
+        epsp.append(v_old - v_lk)
+    coef = np.polyfit(g_values, np.asarray(epsp, dtype=float), 1)
+    return float(np.polyval(coef, float(g)))
+
+
 @dataclass(frozen=True)
 class GU2018Config:
     lattice_shape: tuple[int, int] = (63, 63)
@@ -660,10 +730,14 @@ class GU2018Config:
     tau_c_ee: float = 8.0
     tau_c_ie: float = 10.0
     tau_c_i: float = 20.0
-    use_inverse_pool: bool = True
     post_chunk_size: int = 512
     connection_device: str = "auto"
     max_connection_probability: float = 1.0
+    degree_hybrid: float = 0.4
+    degree_cv: float = 0.2
+    in_out_corr: float = 0.13
+    common_neighbor_scale: float = 2.0
+    common_neighbor_iterations: int = 10
 
     @property
     def resolved_lattice_shape(self) -> tuple[int, int]:
@@ -686,7 +760,199 @@ class GU2018Config:
         return max(1, int(round(self.n_e / 4)))
 
 
-def build_gu_2018_input(
+@dataclass(frozen=True)
+class GU2018SynapseBlock:
+    syn_type: int
+    pop_pre: int
+    pop_post: int
+    i_pre: np.ndarray
+    j_post: np.ndarray
+    weights: np.ndarray
+    delays: np.ndarray
+
+
+@dataclass(frozen=True)
+class GU2018Network:
+    config: GU2018Config
+    n_by_pop: np.ndarray
+    lattice_shape: tuple[int, int]
+    input_event_files: tuple[str, str]
+    synapses: tuple[GU2018SynapseBlock, ...]
+    sample_e: np.ndarray
+    sample_i: np.ndarray
+
+
+def build_gu_2018_strict_network(
+    ext_input_e: str | Path,
+    ext_input_i: str | Path | None = None,
+    *,
+    config: GU2018Config = GU2018Config(),
+    seed: int | None = 1,
+) -> GU2018Network:
+    """Build the strict GU network in memory without writing ``*_in.h5``."""
+    rng = np.random.default_rng(seed)
+    lattice_shape = config.resolved_lattice_shape
+    n_e = config.n_e
+    n_i = config.resolved_n_i
+    n = np.asarray([n_e, n_i], dtype=np.int64)
+    p_mat = np.asarray(config.p_mat, dtype=float)
+
+    deg_mean = n_e * p_mat[0, 0]
+    deg_std = config.degree_cv * deg_mean
+    deg_in_0, deg_out_0 = hybrid_degree_strict(
+        n_e,
+        deg_mean,
+        deg_std,
+        config.in_out_corr,
+        config.degree_hybrid,
+        rng=rng,
+    )
+    i_ee, j_ee, _ = generate_ij_2d_strict(
+        deg_in_0,
+        deg_out_0,
+        config.tau_c_ee,
+        config.common_neighbor_scale,
+        config.common_neighbor_iterations,
+        lattice_shape=lattice_shape,
+        rng=rng,
+        device=config.connection_device,
+    )
+
+    epsp_mu = g_to_epsp_linear(config.g_ee_mu)
+    epsp_sigma = 1.0
+    mu_p = np.log((epsp_mu**2) / np.sqrt(epsp_sigma**2 + epsp_mu**2))
+    s_p = np.sqrt(np.log(epsp_sigma**2 / (epsp_mu**2) + 1.0))
+    mu_p = mu_p + s_p**2
+    epsp_mu_norm = mu_p - s_p**2
+    epsp_sigma_norm = s_p
+    epsp_pool = rng.lognormal(epsp_mu_norm, epsp_sigma_norm, max(i_ee.size, 1))
+    epsp_pool = epsp_pool[epsp_pool <= 20.0]
+    while epsp_pool.size < i_ee.size:
+        extra = rng.lognormal(epsp_mu_norm, epsp_sigma_norm, i_ee.size - epsp_pool.size)
+        epsp_pool = np.concatenate([epsp_pool, extra[extra <= 20.0]])
+    k_ee = assign_gu_ee_weights(
+        j_ee,
+        n_e,
+        weight_mean=config.g_ee_mu,
+        weight_std=config.g_ee_std,
+        rng=rng,
+        use_inverse_pool=True,
+        random_seed=seed,
+    )
+    d_ee = rng.random(i_ee.size) * config.delay_max
+
+    coords_e = rectangular_lattice_coordinates(lattice_shape)
+    coords_i = quasi_lattice_coordinates(n_i, lattice_shape, rng=rng)
+
+    i_ie, j_ie = lattice_to_lattice_strict(
+        coords_i,
+        coords_e,
+        lattice_shape,
+        config.tau_c_i,
+        p_mat[1, 0],
+        rng=rng,
+        device=config.connection_device,
+    )
+    in_weight_ee = np.bincount(j_ee, weights=k_ee, minlength=n_e)
+    count_ie = np.bincount(j_ie, minlength=n_e)
+    g_ei_mu = config.g_ee_mu * config.zeta
+    mu_ie = np.zeros(n_e, dtype=float)
+    valid_ie = count_ie > 0
+    mu_ie[valid_ie] = (in_weight_ee[valid_ie] / count_ie[valid_ie]) * (g_ei_mu / config.g_ee_mu)
+    k_ie = np.abs(rng.normal(mu_ie[j_ie], np.maximum(mu_ie[j_ie] * 0.25, 1e-12))) if j_ie.size else np.asarray([], dtype=float)
+    d_ie = rng.random(i_ie.size) * config.delay_max
+
+    i_ei, j_ei = lattice_to_lattice_strict(
+        coords_e,
+        coords_i,
+        lattice_shape,
+        config.tau_c_ie,
+        p_mat[0, 1],
+        rng=rng,
+        device=config.connection_device,
+    )
+    d_ei = rng.random(i_ei.size) * config.delay_max
+
+    i_ii, j_ii = lattice_to_lattice_strict(
+        coords_i,
+        coords_i,
+        lattice_shape,
+        config.tau_c_i,
+        p_mat[1, 1],
+        rng=rng,
+        device=config.connection_device,
+    )
+    keep = i_ii != j_ii
+    i_ii = i_ii[keep]
+    j_ii = j_ii[keep]
+    d_ii = rng.random(i_ii.size) * config.delay_max
+
+    sample_e = rng.choice(n_e, size=min(20, n_e), replace=False).astype(np.int64)
+    sample_i = np.arange(min(2, n_i), dtype=np.int64)
+    return GU2018Network(
+        config=config,
+        n_by_pop=n,
+        lattice_shape=lattice_shape,
+        input_event_files=(str(ext_input_e), str(ext_input_i if ext_input_i is not None else ext_input_e)),
+        synapses=(
+            GU2018SynapseBlock(0, 0, 0, i_ee, j_ee, k_ee, d_ee),
+            GU2018SynapseBlock(1, 1, 0, i_ie, j_ie, k_ie, d_ie),
+            GU2018SynapseBlock(0, 0, 1, i_ei, j_ei, np.full(i_ei.size, config.g_ie, dtype=float), d_ei),
+            GU2018SynapseBlock(1, 1, 1, i_ii, j_ii, np.full(i_ii.size, config.g_ii, dtype=float), d_ii),
+        ),
+        sample_e=sample_e,
+        sample_i=sample_i,
+    )
+
+
+def write_gu_2018_network_h5(
+    output_path: str | Path,
+    network: GU2018Network,
+    *,
+    loop_num: int = 1,
+    seed: int | None = 1,
+) -> Path:
+    """Write an in-memory strict GU network to SpikeNet-style ``*_in.h5``."""
+    output_path = Path(output_path)
+    path, _ = new_ygin_file(loop_num, output_dir=output_path.parent, filename=output_path.name, seed=seed)
+    config = network.config
+    write_basic_para(path, config.dt, config.step_tot, network.n_by_pop)
+    for pop in range(2):
+        write_pop_para(path, pop, tau_ref=config.tau_ref)
+    write_spike_freq_adpt(path, 0, config.dg_k)
+    write_ext_current_pop(path, network.input_event_files[0], 0)
+    write_ext_current_pop(path, network.input_event_files[1], 1)
+    write_syn_para(path, tau_decay_GABA=3)
+    write_init_cond(path, [0.1, 0.0], [0.0, 0.0])
+
+    for block in network.synapses:
+        write_chemical_connection(
+            path,
+            block.syn_type,
+            block.pop_pre,
+            block.pop_post,
+            block.i_pre,
+            block.j_post,
+            block.weights,
+            block.delays,
+        )
+
+    sample_steps = np.ones(config.step_tot, dtype=np.int8)
+    write_neuron_sampling(path, 1, [1, 1, 1, 1, 0, 0, 1, 0], network.sample_i, sample_steps)
+    write_neuron_sampling(path, 0, [1, 1, 1, 1, 0, 0, 1, 1], network.sample_e, sample_steps)
+    write_expl_var(
+        path,
+        discard_transient=0,
+        loop_num=loop_num,
+        gu_lattice_shape=f"{network.lattice_shape[0]}x{network.lattice_shape[1]}",
+        gu_n_i=int(network.n_by_pop[1]),
+        gu_mode="strict",
+    )
+    append_config_text(path, "Strict Python translation of SpikeNet/models/main_GU_et_al_2018.m")
+    return path
+
+
+def build_gu_2018_strict_input(
     output_path: str | Path,
     ext_input_e: str | Path,
     ext_input_i: str | Path | None = None,
@@ -695,239 +961,9 @@ def build_gu_2018_input(
     loop_num: int = 1,
     seed: int | None = 1,
 ) -> Path:
-    """Build a GU et al. 2018-style SpikeNet ``*_in.h5`` with configurable lattice size."""
-    output_path = Path(output_path)
-    path, rng = new_ygin_file(loop_num, output_dir=output_path.parent, filename=output_path.name, seed=seed)
-
-    lattice_shape = config.resolved_lattice_shape
-    n_e = config.n_e
-    n_i = config.resolved_n_i
-    n = np.asarray([n_e, n_i], dtype=np.int64)
-
-    coords_e = rectangular_lattice_coordinates(lattice_shape)
-    coords_i = quasi_lattice_coordinates(n_i, lattice_shape, rng=rng)
-    p_mat = np.asarray(config.p_mat, dtype=float)
-
-    write_basic_para(path, config.dt, config.step_tot, n)
-    for pop in range(2):
-        write_pop_para(path, pop, tau_ref=config.tau_ref)
-    write_spike_freq_adpt(path, 0, config.dg_k)
-    write_ext_current_pop(path, ext_input_e, 0)
-    write_ext_current_pop(path, ext_input_i if ext_input_i is not None else ext_input_e, 1)
-
-    i_ee, j_ee = generate_gu_lattice_connections(
-        coords_e,
-        coords_e,
-        lattice_shape,
-        p0=p_mat[0, 0],
-        tau_c=config.tau_c_ee,
-        rng=rng,
-        post_chunk_size=config.post_chunk_size,
-        device=config.connection_device,
-        allow_self=False,
-        max_probability=config.max_connection_probability,
-    )
-    k_ee = assign_gu_ee_weights(
-        j_ee,
-        n_e,
-        weight_mean=config.g_ee_mu,
-        weight_std=config.g_ee_std,
-        rng=rng,
-        use_inverse_pool=config.use_inverse_pool,
-        random_seed=seed,
-    )
-    d_ee = rng.random(i_ee.size) * config.delay_max
-    write_chemical_connection(path, 0, 0, 0, i_ee, j_ee, k_ee, d_ee)
-
-    in_weight_ee = np.bincount(j_ee, weights=k_ee, minlength=n_e)
-
-    i_ie, j_ie = generate_gu_lattice_connections(
-        coords_i,
-        coords_e,
-        lattice_shape,
-        p0=p_mat[1, 0],
-        tau_c=config.tau_c_i,
-        rng=rng,
-        post_chunk_size=config.post_chunk_size,
-        device=config.connection_device,
-        allow_self=True,
-        max_probability=config.max_connection_probability,
-    )
-    count_ie = np.bincount(j_ie, minlength=n_e)
-    mu_ie = np.zeros(n_e, dtype=float)
-    valid_ie = count_ie > 0
-    mu_ie[valid_ie] = (in_weight_ee[valid_ie] / count_ie[valid_ie]) * config.zeta
-    k_ie = np.abs(rng.normal(mu_ie[j_ie], np.maximum(mu_ie[j_ie] * 0.25, 1e-12))) if j_ie.size else np.asarray([], dtype=float)
-    d_ie = rng.random(i_ie.size) * config.delay_max
-    write_chemical_connection(path, 1, 1, 0, i_ie, j_ie, k_ie, d_ie)
-
-    i_ei, j_ei = generate_gu_lattice_connections(
-        coords_e,
-        coords_i,
-        lattice_shape,
-        p0=p_mat[0, 1],
-        tau_c=config.tau_c_ie,
-        rng=rng,
-        post_chunk_size=config.post_chunk_size,
-        device=config.connection_device,
-        allow_self=True,
-        max_probability=config.max_connection_probability,
-    )
-    k_ei = np.full(i_ei.size, config.g_ie, dtype=float)
-    d_ei = rng.random(i_ei.size) * config.delay_max
-    write_chemical_connection(path, 0, 0, 1, i_ei, j_ei, k_ei, d_ei)
-
-    i_ii, j_ii = generate_gu_lattice_connections(
-        coords_i,
-        coords_i,
-        lattice_shape,
-        p0=p_mat[1, 1],
-        tau_c=config.tau_c_i,
-        rng=rng,
-        post_chunk_size=config.post_chunk_size,
-        device=config.connection_device,
-        allow_self=False,
-        max_probability=config.max_connection_probability,
-    )
-    k_ii = np.full(i_ii.size, config.g_ii, dtype=float)
-    d_ii = rng.random(i_ii.size) * config.delay_max
-    write_chemical_connection(path, 1, 1, 1, i_ii, j_ii, k_ii, d_ii)
-
-    write_syn_para(path, tau_decay_GABA=3)
-    write_init_cond(path, [0.1, 0.0], [0.0, 0.0])
-
-    sample_steps = np.ones(config.step_tot, dtype=np.int8)
-    sample_i = np.arange(min(2, n_i), dtype=np.int64)
-    write_neuron_sampling(path, 1, [1, 1, 1, 1, 0, 0, 1, 0], sample_i, sample_steps)
-    sample_e = rng.choice(n_e, size=min(20, n_e), replace=False).astype(np.int64)
-    write_neuron_sampling(path, 0, [1, 1, 1, 1, 0, 0, 1, 1], sample_e, sample_steps)
-
-    write_expl_var(
-        path,
-        discard_transient=0,
-        loop_num=loop_num,
-        gu_lattice_shape=f"{lattice_shape[0]}x{lattice_shape[1]}",
-        gu_n_i=n_i,
-    )
-    append_config_text(path, "Python GU-style translation of SpikeNet/models/main_GU_et_al_2018.m")
-    return path
-
-
-@dataclass(frozen=True)
-class ChenGong2019Config:
-    gsize: int = 250
-    grid_shape: tuple[int, int] | None = None
-    dt: float = 0.1
-    step_tot: int = 100000
-    alpha: float = 1.65
-    f_external: float = 1e-2
-    sample_start: int = 15999
-    sample_stop: int = 23999
-    sample_stride: int = 10
-    post_chunk_size: int = 512
-    connection_backend: str = "auto"
-    connection_device: str = "auto"
-
-    @property
-    def resolved_grid_shape(self) -> tuple[int, int]:
-        if self.grid_shape is not None:
-            if len(self.grid_shape) != 2:
-                raise ValueError("grid_shape must be (height, width)")
-            grid_h, grid_w = int(self.grid_shape[0]), int(self.grid_shape[1])
-        else:
-            grid_h = grid_w = int(self.gsize)
-        if grid_h <= 0 or grid_w <= 0:
-            raise ValueError("grid dimensions must be positive")
-        return grid_h, grid_w
-
-
-def build_chen_gong_2019_input(
-    output_path: str | Path,
-    ext_current_e: str | Path,
-    ext_current_i: str | Path,
-    *,
-    config: ChenGong2019Config = ChenGong2019Config(),
-    loop_num: int = 1,
-    seed: int | None = 1,
-) -> Path:
-    """Translate ``models/main_Chen_and_Gong_2019.m`` into a Python builder."""
-    output_path = Path(output_path)
-    path, rng = new_ygin_file(loop_num, output_dir=output_path.parent, filename=output_path.name, seed=seed)
-
-    grid_h, grid_w = config.resolved_grid_shape
-    grid = np.zeros((grid_h, grid_w), dtype=np.int8)
-    grid[1::2, 1::2] = 1
-    n = np.bincount(grid.ravel(), minlength=2).astype(np.int64)
-
-    write_synapse_model_choice(path, 1)
-    write_basic_para(path, config.dt, config.step_tot, n)
-
-    pop_params = {
-        "Cm": 1,
-        "tau_ref": 5.0,
-        "V_rt": -75.6250,
-        "V_lk": -70,
-        "V_th": -40,
-        "g_lk": 0.050,
-    }
-    for pop in range(2):
-        write_pop_para(path, pop, **pop_params)
-        write_elif_neuron_model(path, pop, -60.6250, 6.5625)
-
-    f_ext = config.f_external
-    ext_mean_std = [np.full(pop_n, f_ext, dtype=float) for pop_n in n]
-    for pop, values in enumerate(ext_mean_std):
-        write_ext_conductance_settings(path, pop, values, values)
-    write_init_cond(path, np.ones(2), np.zeros(2))
-    write_ext_current_pop(path, ext_current_e, 0)
-    write_ext_current_pop(path, ext_current_i, 1)
-
-    drange = np.asarray([[45, 45], [45, 45]], dtype=float)
-    sigma = np.asarray([[18, 18], [9e9, 9e9]], dtype=float)
-    weight_e = 0.13 * config.alpha
-    weight_i = 0.035 * config.alpha
-    weights = np.asarray([[weight_e, weight_e], [weight_i, weight_i]], dtype=float)
-    synapse_type = np.asarray([[0, 0], [1, 1]], dtype=int)
-
-    for pop_pre in range(2):
-        for pop_post in range(2):
-            i, j, k, d = generate_chen_gong_connections(
-                grid,
-                pop_pre,
-                pop_post,
-                weights[pop_pre, pop_post],
-                drange[pop_pre, pop_post],
-                sigma[pop_pre, pop_post],
-                inhibitory_pre=(pop_pre == 1),
-                rng=rng,
-                post_chunk_size=config.post_chunk_size,
-                backend=config.connection_backend,
-                device=config.connection_device,
-            )
-            _require_index_bounds(i, f"syn pop{pop_pre}->pop{pop_post} I", n[pop_pre])
-            _require_index_bounds(j, f"syn pop{pop_pre}->pop{pop_post} J", n[pop_post])
-            write_chemical_connection(path, synapse_type[pop_pre, pop_post], pop_pre, pop_post, i, j, k, d)
-
-    write_syn_para(
-        path,
-        tau_decay_GABA=3,
-        Dt_trans_AMPA=0.3,
-        tau_decay_AMPA=2.0,
-        Dt_trans_GABA=0.3,
-        V_ex=0,
-        V_in=-80,
-    )
-
-    sample_steps = np.zeros(config.step_tot, dtype=np.int8)
-    sample_stop = min(config.sample_stop, config.step_tot - 1)
-    if config.sample_start <= sample_stop:
-        sample_steps[np.arange(config.sample_start, sample_stop + 1, config.sample_stride)] = 1
-    for pop, pop_n in enumerate(n):
-        write_neuron_sampling(path, pop, [1, 0, 0, 0, 0, 0, 0, 0], np.arange(pop_n, dtype=np.int64), sample_steps)
-
-    write_expl_var(path, discard_transient=0, loop_num=loop_num, F=f_ext)
-    append_config_text(path, "Python translation of SpikeNet/models/main_Chen_and_Gong_2019.m")
-    return path
+    """Strict GU 2018 preprocessing translation with common-neighbor E/E iteration."""
+    network = build_gu_2018_strict_network(ext_input_e, ext_input_i, config=config, seed=seed)
+    return write_gu_2018_network_h5(output_path, network, loop_num=loop_num, seed=seed)
 
 
 def assign_inverse_pool_weights_from_repo_b(
@@ -961,29 +997,31 @@ def assign_inverse_pool_weights_from_repo_b(
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Build a SpikeNet *_in.h5 file from Python.")
+    parser = argparse.ArgumentParser(description="Build a GU-style SpikeNet *_in.h5 file from Python.")
     parser.add_argument("output_h5")
-    parser.add_argument("--ext-current-e", required=True)
-    parser.add_argument("--ext-current-i", required=True)
-    parser.add_argument("--gsize", type=int, default=250, help="Square grid size. Ignored when --grid-shape is provided.")
-    parser.add_argument("--grid-shape", nargs=2, type=int, metavar=("HEIGHT", "WIDTH"))
+    parser.add_argument("--event-e", required=True)
+    parser.add_argument("--event-i")
+    parser.add_argument("--lattice-shape", nargs=2, type=int, metavar=("HEIGHT", "WIDTH"), default=(63, 63))
+    parser.add_argument("--n-i", type=int)
     parser.add_argument("--step-tot", type=int, default=100000)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--connection-backend", choices=("auto", "torch", "numpy"), default="auto")
     parser.add_argument("--connection-device", default="auto", help="auto, cpu, cuda, cuda:0, ...")
+    parser.add_argument("--post-chunk-size", type=int, default=512)
+    parser.add_argument("--common-neighbor-iterations", type=int, default=10)
     args = parser.parse_args()
 
-    cfg = ChenGong2019Config(
-        gsize=args.gsize,
-        grid_shape=None if args.grid_shape is None else tuple(args.grid_shape),
+    cfg = GU2018Config(
+        lattice_shape=(int(args.lattice_shape[0]), int(args.lattice_shape[1])),
+        n_i=args.n_i,
         step_tot=args.step_tot,
-        connection_backend=args.connection_backend,
+        post_chunk_size=args.post_chunk_size,
         connection_device=args.connection_device,
+        common_neighbor_iterations=args.common_neighbor_iterations,
     )
-    path = build_chen_gong_2019_input(
+    path = build_gu_2018_strict_input(
         args.output_h5,
-        args.ext_current_e,
-        args.ext_current_i,
+        args.event_e,
+        args.event_i,
         config=cfg,
         seed=args.seed,
     )

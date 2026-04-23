@@ -8,6 +8,8 @@
 
 重点解释 SpikeNet 的输入输出、网络结构、神经元模型、连接方式、前向动力学和学习/可塑性机制。
 
+当前 `translation/` 的可运行路线已经收敛为 GU preprocessing -> btorch adapter -> postprocessing。本文档保留为 SpikeNet 原仓库和历史迁移分析背景，不代表当前仍保留独立 Python simulator adapter。
+
 ## 整体架构
 
 SpikeNet 分三层：
@@ -205,7 +207,7 @@ file_current_input -> /current, /neurons, /frame_rate ...
 file_spike_input   -> /x, /y, /t, /max_x, /max_y
 ```
 
-这点和 `export_hdf5_events.py` 的 `x/y/t/pol` 接口需要核对。如果 Python simulator 已经改成 `file_current_input` 接 `x/y/t/pol`，那没问题；但如果直接跑 SpikeNet C++ 原版，事件流更应该走 `writeSpikeFileInputPopHDF5` 风格，而不是 `writeExtCurrentPopHDF5` 风格。
+这点和 `export_hdf5_events.py` 的 `x/y/t/pol` 接口需要核对。当前 `translation/` 不再保留独立 Python simulator adapter；event HDF5 到网络输入的转换由 `btorch_interface.py` 负责。若直接跑 SpikeNet C++ 原版，事件流更应该走 `writeSpikeFileInputPopHDF5` 风格，而不是 `writeExtCurrentPopHDF5` 风格。
 
 这是后续对接 simulator 时必须确认的接口差异。
 
@@ -1004,8 +1006,8 @@ Matlab post-processing -> Python post-processing
     event x/y/t 应该更接近 file_spike_input
     current matrix 应该走 file_current_input
 
-如果 Python simulator 已改接口：
-    需要以 Python simulator 的 reader 为准
+当前 translation 路线:
+    event x/y/t/pol 由 btorch_interface.py rasterize 成 [T,B,N_total]
 ```
 
 也就是说，网络结构和动力学本身已经清楚，但 “attention 前 lif_spk 到 simulator population 的映射” 必须和 simulator 实际读取代码保持一致。

@@ -15,7 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from spkData.export_hdf5_events import write_event_hdf5  # noqa: E402
-from translation.debug_preprocessing_flow import (  # noqa: E402
+from translation.debug_h5_utils import (  # noqa: E402
     Report,
     check_population_match,
     h5_tree,
@@ -24,7 +24,7 @@ from translation.debug_preprocessing_flow import (  # noqa: E402
     save_event_preview,
     write_json_report,
 )
-from translation.spikenet_preprocessing import GU2018Config, build_gu_2018_input  # noqa: E402
+from translation.spikenet_preprocessing import GU2018Config, build_gu_2018_strict_input  # noqa: E402
 
 
 def make_synthetic_event_file(path: Path, *, frames: int, height: int, width: int) -> Path:
@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--connection-device", default="auto")
     parser.add_argument("--post-chunk-size", type=int, default=512)
     parser.add_argument("--p-scale", type=float, default=1.0, help="Scale GU P_mat for lightweight debug runs.")
-    parser.add_argument("--disable-inverse-pool", action="store_true")
+    parser.add_argument("--common-neighbor-iterations", type=int, default=3)
     parser.add_argument("--output-dir", type=Path, default=Path("translation/debug_outputs/gu_preprocessing"))
     return parser.parse_args()
 
@@ -102,12 +102,12 @@ def main() -> int:
         n_i=args.n_i,
         step_tot=args.step_tot,
         p_mat=((float(p_base[0, 0]), float(p_base[0, 1])), (float(p_base[1, 0]), float(p_base[1, 1]))),
-        use_inverse_pool=not args.disable_inverse_pool,
         post_chunk_size=args.post_chunk_size,
         connection_device=args.connection_device,
+        common_neighbor_iterations=args.common_neighbor_iterations,
     )
     in_h5 = args.output_dir / f"gu_{height}x{width}_debug_in.h5"
-    build_gu_2018_input(in_h5, event_e, event_i, config=cfg, loop_num=1, seed=args.seed)
+    build_gu_2018_strict_input(in_h5, event_e, event_i, config=cfg, loop_num=1, seed=args.seed)
     report.pass_("GU preprocessing build", str(in_h5))
     in_summary = inspect_in_file(in_h5, event_e, event_i or event_e, report)
     tree_path = args.output_dir / f"gu_{height}x{width}_debug_in_tree.txt"

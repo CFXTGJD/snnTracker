@@ -205,7 +205,7 @@ def read_spikenet_out_h5(
                 step_tot = _read_optional(cfg_h5, "/config/Net/INIT002/step_tot")
 
         if n is None:
-            # Fallback for Python simulator outputs that store config in out.h5.
+            # Fallback for dense/btorch outputs that store config in out.h5.
             n = _read_optional(out_h5, "/config/Net/INIT001/N")
         if dt is None:
             dt = _read_optional(out_h5, "/config/Net/INIT002/dt")
